@@ -40,12 +40,17 @@ func SendFollowUp(sessionID, message string) error {
 	}
 	data = append(data, '\n')
 
-	if err := conn.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
-		return fmt.Errorf("set write deadline: %w", err)
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return fmt.Errorf("set deadline: %w", err)
 	}
 	if _, err := conn.Write(data); err != nil {
 		return fmt.Errorf("write command: %w", err)
 	}
+
+	// Read the response before closing so the server doesn't get EPIPE
+	// trying to write its acknowledgement to an already-closed socket.
+	buf := make([]byte, 4096)
+	conn.Read(buf) // response is informational; ignore errors
 	return nil
 }
 
