@@ -3,8 +3,10 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/joargp/agentctl/internal/session"
@@ -27,11 +29,12 @@ Examples:
 }
 
 var (
-	runModel string
-	runTask  string
-	runCwd   string
-	runName  string
-	runWait  bool
+	runModel         string
+	runTask          string
+	runCwd           string
+	runName          string
+	runWait          bool
+	runNotifySession string
 )
 
 func init() {
@@ -40,8 +43,8 @@ func init() {
 	runCmd.Flags().StringVar(&runCwd, "cwd", "", "working directory (default: current dir)")
 	runCmd.Flags().StringVar(&runName, "name", "", "short label for monitor output (default: model name)")
 	runCmd.Flags().BoolVar(&runWait, "wait", false, "block until the agent session finishes")
-	_ = runCmd.MarkFlagRequired("model")
-	_ = runCmd.MarkFlagRequired("task")
+	runCmd.Flags().StringVar(&runNotifySession, "notify-session", "",
+		"pi session ID to send a follow_up message to when done (default: $PI_SESSION_ID)")
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -115,6 +118,19 @@ exec pi --model %s --no-session -p "$task"
 		return fmt.Errorf("save session: %w", err)
 	}
 
+	// Resolve notify session: flag > env var.
+	notifySession := runNotifySession
+	if notifySession == "" {
+		notifySession = os.Getenv("PI_SESSION_ID")
+	}
+
+	// Spawn detached watcher before printing ID so it's already running.
+	if notifySession != "" && !runWait {
+		if err := spawnWatcher(id, notifySession); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: could not spawn watcher: %v\n", err)
+		}
+	}
+
 	// ID goes to stdout so callers can capture it cleanly.
 	fmt.Println(id)
 
@@ -123,6 +139,9 @@ exec pi --model %s --no-session -p "$task"
 	fmt.Fprintf(os.Stderr, "log:    %s\n", logFile)
 	fmt.Fprintf(os.Stderr, "\nTo monitor:  agentctl monitor %s\n", id)
 	fmt.Fprintf(os.Stderr, "To attach:   agentctl attach %s\n", id)
+	if notifySession != "" {
+		fmt.Fprintf(os.Stderr, "Notify:      pi session %s\n", notifySession)
+	}
 
 	if runWait {
 		fmt.Fprintln(os.Stderr, "\nWaiting for agent to finish...")
@@ -133,6 +152,22 @@ exec pi --model %s --no-session -p "$task"
 	}
 
 	return nil
+}
+
+// spawnWatcher starts a detached 'agentctl watch' process that notifies the pi
+// session when the agent finishes. The process is fully detached (new process
+// group, no stdin/stdout/stderr) so it survives after agentctl run exits.
+func spawnWatcher(agentID, piSessionID string) error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable: %w", err)
+	}
+	cmd := exec.Command(self, "watch", agentID, "--notify-session", piSessionID)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // detach from parent process group
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Start()
 }
 
 // shellQuote wraps s in single quotes, escaping any existing single quotes.
