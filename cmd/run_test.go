@@ -33,8 +33,8 @@ func TestResolveWatcherNotifyOptionsNotifyMuninUsesEnv(t *testing.T) {
 		t.Fatalf("resolveWatcherNotifyOptions returned error: %v", err)
 	}
 
-	if options.PiSessionID != "session-123" {
-		t.Fatalf("expected pi session to be resolved from env, got %q", options.PiSessionID)
+	if options.PiSessionID != "" {
+		t.Fatalf("expected explicit notify-munin to suppress PI_SESSION_ID fallback, got %q", options.PiSessionID)
 	}
 	if options.EventDir != "/workspace/events" {
 		t.Fatalf("expected event dir from env, got %q", options.EventDir)
@@ -100,5 +100,67 @@ func TestResolveWatcherNotifyOptionsNotifyMuninRequiresContext(t *testing.T) {
 	_, err := resolveWatcherNotifyOptions(true, func(string) string { return "" })
 	if err == nil {
 		t.Fatal("expected error when notify-munin has no event context")
+	}
+}
+
+func TestResolveWatcherNotifyOptionsFallsBackToPiSessionOnlyWhenNoExplicitNotifier(t *testing.T) {
+	prevSession := runNotifySession
+	prevEventDir := runNotifyEventDir
+	prevEventChannel := runNotifyEventChannel
+	prevEventThread := runNotifyEventThread
+	defer func() {
+		runNotifySession = prevSession
+		runNotifyEventDir = prevEventDir
+		runNotifyEventChannel = prevEventChannel
+		runNotifyEventThread = prevEventThread
+	}()
+
+	runNotifySession = ""
+	runNotifyEventDir = ""
+	runNotifyEventChannel = ""
+	runNotifyEventThread = ""
+
+	options, err := resolveWatcherNotifyOptions(false, func(key string) string {
+		if key == piSessionIDEnv {
+			return "session-123"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("resolveWatcherNotifyOptions returned error: %v", err)
+	}
+	if options.PiSessionID != "session-123" {
+		t.Fatalf("expected PI_SESSION_ID fallback when no explicit notifier is set, got %q", options.PiSessionID)
+	}
+}
+
+func TestResolveWatcherNotifyOptionsExplicitEventNotifierSuppressesPiSessionFallback(t *testing.T) {
+	prevSession := runNotifySession
+	prevEventDir := runNotifyEventDir
+	prevEventChannel := runNotifyEventChannel
+	prevEventThread := runNotifyEventThread
+	defer func() {
+		runNotifySession = prevSession
+		runNotifyEventDir = prevEventDir
+		runNotifyEventChannel = prevEventChannel
+		runNotifyEventThread = prevEventThread
+	}()
+
+	runNotifySession = ""
+	runNotifyEventDir = "/workspace/events"
+	runNotifyEventChannel = "C123"
+	runNotifyEventThread = ""
+
+	options, err := resolveWatcherNotifyOptions(false, func(key string) string {
+		if key == piSessionIDEnv {
+			return "session-123"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("resolveWatcherNotifyOptions returned error: %v", err)
+	}
+	if options.PiSessionID != "" {
+		t.Fatalf("expected explicit event notifier to suppress PI_SESSION_ID fallback, got %q", options.PiSessionID)
 	}
 }

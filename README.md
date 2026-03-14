@@ -39,7 +39,7 @@ The session ID is printed to **stdout**; hints go to **stderr** so `id=$(agentct
 #### Pi session follow-up
 
 ```bash
-# Uses $PI_SESSION_ID automatically when present
+# Uses $PI_SESSION_ID automatically when present, but only when no explicit notifier is selected
 id=$(agentctl run --model claude-opus-4-6 --task "..." 2>/dev/null)
 
 # Or target a specific pi session explicitly

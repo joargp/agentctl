@@ -183,8 +183,10 @@ exec pi --model %s --no-session -p "$task"
 }
 
 func resolveWatcherNotifyOptions(notifyMunin bool, getenv func(string) string) (watcherNotifyOptions, error) {
+	hasExplicitNotifier := notifyMunin || runNotifySession != "" || runNotifyEventDir != "" || runNotifyEventChannel != "" || runNotifyEventThread != ""
+
 	notifySession := runNotifySession
-	if notifySession == "" {
+	if notifySession == "" && !hasExplicitNotifier {
 		notifySession = getenv(piSessionIDEnv)
 	}
 
