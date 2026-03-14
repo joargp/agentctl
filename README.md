@@ -32,6 +32,49 @@ agentctl run --model claude-opus-4-6 --task "fix the failing tests" --cwd /repos
 
 The session ID is printed to **stdout**; hints go to **stderr** so `id=$(agentctl run ...)` works cleanly.
 
+### Completion notifications
+
+`agentctl run` can notify another system when the agent finishes.
+
+#### Pi session follow-up
+
+```bash
+# Uses $PI_SESSION_ID automatically when present
+id=$(agentctl run --model claude-opus-4-6 --task "..." 2>/dev/null)
+
+# Or target a specific pi session explicitly
+id=$(agentctl run --model claude-opus-4-6 --task "..." --notify-session "$PI_SESSION_ID" 2>/dev/null)
+```
+
+#### Munin shorthand
+
+When Munin provides these environment variables:
+- `MUNIN_EVENTS_DIR`
+- `MUNIN_CHANNEL_ID`
+- `MUNIN_THREAD_TS` (optional)
+
+use the shorthand flag:
+
+```bash
+id=$(agentctl run --model openai/gpt-5.4 --task "..." --notify-munin 2>/dev/null)
+```
+
+#### Write an immediate event file explicitly
+
+Useful outside Munin or when you want to override the defaults:
+
+```bash
+id=$(agentctl run \
+  --model openai/gpt-5.4 \
+  --task "..." \
+  --notify-event-dir /workspace/events \
+  --notify-event-channel C123 \
+  --notify-event-thread 1710000000.000100 \
+  2>/dev/null)
+```
+
+This writes an `immediate` event JSON file when the agent completes.
+
 ### Provider syntax
 
 Use `provider/model` when a model name is ambiguous across providers:
@@ -98,6 +141,8 @@ exec pi --model <model> --no-session -p "<task>"
 ```
 
 Output is streamed to a log file via `tmux pipe-pane`. When pi exits the tmux session is destroyed automatically, flipping the session status to `done`.
+
+When `--notify-session`, `--notify-munin`, or `--notify-event-dir` is set, `agentctl` also spawns a detached watcher process that waits for the tmux session to disappear and then sends the configured completion notification(s).
 
 Session metadata is stored in `~/.local/share/agentctl/sessions/`. Log files live in `~/.local/share/agentctl/logs/` and survive `kill`.
 

@@ -1,6 +1,7 @@
-// Package notify sends a follow_up message to a pi session's control socket.
-// The socket lives at ~/.pi/session-control/<session-id>.sock and accepts
-// newline-delimited JSON commands as defined by the pi control.ts extension.
+// Package notify sends completion notifications for agentctl sessions.
+// It currently supports:
+//   - follow_up messages to a pi session control socket
+//   - immediate event JSON files for external runtimes like Munin
 package notify
 
 import (
@@ -16,6 +17,22 @@ type sendCmd struct {
 	Type    string `json:"type"`
 	Message string `json:"message"`
 	Mode    string `json:"mode"`
+}
+
+type eventFile struct {
+	Type      string            `json:"type"`
+	ChannelID string            `json:"channelId"`
+	Text      string            `json:"text"`
+	ThreadTs  string            `json:"threadTs,omitempty"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+}
+
+// ImmediateEvent describes a file-based immediate event notification.
+type ImmediateEvent struct {
+	ChannelID string
+	Text      string
+	ThreadTs  string
+	Metadata  map[string]string
 }
 
 // SendFollowUp delivers message to the pi session identified by sessionID as a
@@ -51,6 +68,47 @@ func SendFollowUp(sessionID, message string) error {
 	// trying to write its acknowledgement to an already-closed socket.
 	buf := make([]byte, 4096)
 	conn.Read(buf) // response is informational; ignore errors
+	return nil
+}
+
+// WriteImmediateEvent writes an immediate event JSON file atomically.
+func WriteImmediateEvent(dir string, event ImmediateEvent) error {
+	if dir == "" {
+		return fmt.Errorf("event dir is required")
+	}
+	if event.ChannelID == "" {
+		return fmt.Errorf("event channel ID is required")
+	}
+	if event.Text == "" {
+		return fmt.Errorf("event text is required")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create event dir: %w", err)
+	}
+
+	payload := eventFile{
+		Type:      "immediate",
+		ChannelID: event.ChannelID,
+		Text:      event.Text,
+		ThreadTs:  event.ThreadTs,
+		Metadata:  event.Metadata,
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal event: %w", err)
+	}
+	data = append(data, '\n')
+
+	base := fmt.Sprintf("agentctl-done-%d-%d", time.Now().UnixNano(), os.Getpid())
+	tmpPath := filepath.Join(dir, "."+base+".tmp")
+	finalPath := filepath.Join(dir, base+".json")
+	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		return fmt.Errorf("write temp event file: %w", err)
+	}
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename event file: %w", err)
+	}
 	return nil
 }
 

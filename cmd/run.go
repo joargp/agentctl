@@ -14,6 +14,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	muninEventsDirEnv = "MUNIN_EVENTS_DIR"
+	muninChannelIDEnv = "MUNIN_CHANNEL_ID"
+	muninThreadTsEnv  = "MUNIN_THREAD_TS"
+	piSessionIDEnv    = "PI_SESSION_ID"
+)
+
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Spawn a pi agent session",
@@ -28,13 +35,24 @@ Examples:
 	RunE: runRun,
 }
 
+type watcherNotifyOptions struct {
+	PiSessionID  string
+	EventDir     string
+	EventChannel string
+	EventThread  string
+}
+
 var (
-	runModel         string
-	runTask          string
-	runCwd           string
-	runName          string
-	runWait          bool
-	runNotifySession string
+	runModel              string
+	runTask               string
+	runCwd                string
+	runName               string
+	runWait               bool
+	runNotifySession      string
+	runNotifyMunin        bool
+	runNotifyEventDir     string
+	runNotifyEventChannel string
+	runNotifyEventThread  string
 )
 
 func init() {
@@ -45,10 +63,23 @@ func init() {
 	runCmd.Flags().BoolVar(&runWait, "wait", false, "block until the agent session finishes")
 	runCmd.Flags().StringVar(&runNotifySession, "notify-session", "",
 		"pi session ID to send a follow_up message to when done (default: $PI_SESSION_ID)")
+	runCmd.Flags().BoolVar(&runNotifyMunin, "notify-munin", false,
+		"write a Munin-compatible completion event using MUNIN_EVENTS_DIR and MUNIN_CHANNEL_ID (optional MUNIN_THREAD_TS)")
+	runCmd.Flags().StringVar(&runNotifyEventDir, "notify-event-dir", "",
+		"write an immediate event JSON file to this directory when the agent finishes")
+	runCmd.Flags().StringVar(&runNotifyEventChannel, "notify-event-channel", "",
+		"channel ID to include in the completion event (requires --notify-event-dir)")
+	runCmd.Flags().StringVar(&runNotifyEventThread, "notify-event-thread", "",
+		"optional thread ts to include in the completion event (requires --notify-event-dir)")
 	rootCmd.AddCommand(runCmd)
 }
 
 func runRun(_ *cobra.Command, _ []string) error {
+	notifyOptions, err := resolveWatcherNotifyOptions(runNotifyMunin, getenv)
+	if err != nil {
+		return err
+	}
+
 	id, err := session.NewID()
 	if err != nil {
 		return err
@@ -118,15 +149,9 @@ exec pi --model %s --no-session -p "$task"
 		return fmt.Errorf("save session: %w", err)
 	}
 
-	// Resolve notify session: flag > env var.
-	notifySession := runNotifySession
-	if notifySession == "" {
-		notifySession = os.Getenv("PI_SESSION_ID")
-	}
-
 	// Spawn detached watcher before printing ID so it's already running.
-	if notifySession != "" && !runWait {
-		if err := spawnWatcher(id, notifySession); err != nil {
+	if hasWatcherNotifications(notifyOptions) && !runWait {
+		if err := spawnWatcher(id, notifyOptions); err != nil {
 			fmt.Fprintf(os.Stderr, "warn: could not spawn watcher: %v\n", err)
 		}
 	}
@@ -139,8 +164,11 @@ exec pi --model %s --no-session -p "$task"
 	fmt.Fprintf(os.Stderr, "log:    %s\n", logFile)
 	fmt.Fprintf(os.Stderr, "\nTo monitor:  agentctl monitor %s\n", id)
 	fmt.Fprintf(os.Stderr, "To attach:   agentctl attach %s\n", id)
-	if notifySession != "" {
-		fmt.Fprintf(os.Stderr, "Notify:      pi session %s\n", notifySession)
+	if notifyOptions.PiSessionID != "" {
+		fmt.Fprintf(os.Stderr, "Notify:      pi session %s\n", notifyOptions.PiSessionID)
+	}
+	if notifyOptions.EventDir != "" {
+		fmt.Fprintf(os.Stderr, "Notify:      event dir %s (channel %s)\n", notifyOptions.EventDir, notifyOptions.EventChannel)
 	}
 
 	if runWait {
@@ -154,20 +182,99 @@ exec pi --model %s --no-session -p "$task"
 	return nil
 }
 
-// spawnWatcher starts a detached 'agentctl watch' process that notifies the pi
-// session when the agent finishes. The process is fully detached (new process
-// group, no stdin/stdout/stderr) so it survives after agentctl run exits.
-func spawnWatcher(agentID, piSessionID string) error {
+func resolveWatcherNotifyOptions(notifyMunin bool, getenv func(string) string) (watcherNotifyOptions, error) {
+	notifySession := runNotifySession
+	if notifySession == "" {
+		notifySession = getenv(piSessionIDEnv)
+	}
+
+	options := watcherNotifyOptions{
+		PiSessionID:  notifySession,
+		EventDir:     runNotifyEventDir,
+		EventChannel: runNotifyEventChannel,
+		EventThread:  runNotifyEventThread,
+	}
+
+	if notifyMunin {
+		if options.EventDir == "" {
+			options.EventDir = getenv(muninEventsDirEnv)
+		}
+		if options.EventChannel == "" {
+			options.EventChannel = getenv(muninChannelIDEnv)
+		}
+		if options.EventThread == "" {
+			options.EventThread = getenv(muninThreadTsEnv)
+		}
+	}
+
+	if err := validateWatcherNotifyOptions(options); err != nil {
+		return watcherNotifyOptions{}, err
+	}
+	if notifyMunin && (options.EventDir == "" || options.EventChannel == "") {
+		return watcherNotifyOptions{}, fmt.Errorf(
+			"--notify-munin requires %s and %s (or explicit --notify-event-dir/--notify-event-channel)",
+			muninEventsDirEnv,
+			muninChannelIDEnv,
+		)
+	}
+	return options, nil
+}
+
+func validateWatcherNotifyOptions(options watcherNotifyOptions) error {
+	hasEventDir := options.EventDir != ""
+	hasEventChannel := options.EventChannel != ""
+	hasEventThread := options.EventThread != ""
+
+	if hasEventChannel && !hasEventDir {
+		return fmt.Errorf("--notify-event-channel requires --notify-event-dir")
+	}
+	if hasEventThread && !hasEventDir {
+		return fmt.Errorf("--notify-event-thread requires --notify-event-dir")
+	}
+	if hasEventDir && !hasEventChannel {
+		return fmt.Errorf("--notify-event-dir requires --notify-event-channel")
+	}
+
+	return nil
+}
+
+func hasWatcherNotifications(options watcherNotifyOptions) bool {
+	return options.PiSessionID != "" || options.EventDir != ""
+}
+
+// spawnWatcher starts a detached 'agentctl watch' process that notifies
+// completion backends when the agent finishes. The process is fully detached
+// (new process group, no stdin/stdout/stderr) so it survives after `agentctl run` exits.
+func spawnWatcher(agentID string, options watcherNotifyOptions) error {
 	self, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve executable: %w", err)
 	}
-	cmd := exec.Command(self, "watch", agentID, "--notify-session", piSessionID)
+
+	args := []string{"watch", agentID}
+	if options.PiSessionID != "" {
+		args = append(args, "--notify-session", options.PiSessionID)
+	}
+	if options.EventDir != "" {
+		args = append(args,
+			"--notify-event-dir", options.EventDir,
+			"--notify-event-channel", options.EventChannel,
+		)
+		if options.EventThread != "" {
+			args = append(args, "--notify-event-thread", options.EventThread)
+		}
+	}
+
+	cmd := exec.Command(self, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // detach from parent process group
 	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	return cmd.Start()
+}
+
+func getenv(key string) string {
+	return os.Getenv(key)
 }
 
 // shellQuote wraps s in single quotes, escaping any existing single quotes.
