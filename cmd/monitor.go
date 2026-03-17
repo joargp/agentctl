@@ -99,6 +99,7 @@ func runMonitor(_ *cobra.Command, args []string) error {
 				Follow:    true,
 				ReOpen:    true,
 				MustExist: false,
+				Poll:      true, // inotify unreliable on Docker bind mounts
 				Logger:    tail.DiscardingLogger,
 			})
 			if err != nil {

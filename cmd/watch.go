@@ -132,6 +132,7 @@ func startProgressTailer(s *session.Session, opts watcherNotifyOptions) (*progre
 		Follow:    true,
 		ReOpen:    true,
 		MustExist: false,
+		Poll:      true, // inotify unreliable on Docker bind mounts
 		Logger:    tail.DiscardingLogger,
 	})
 	if err != nil {
