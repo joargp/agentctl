@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -105,13 +106,64 @@ func runMonitor(_ *cobra.Command, args []string) error {
 				return
 			}
 			defer t.Cleanup()
-			for l := range t.Lines {
-				if l.Err != nil {
-					continue
+			var buf strings.Builder
+			flushTimer := time.NewTimer(0)
+			if !flushTimer.Stop() {
+				<-flushTimer.C
+			}
+
+			flush := func() {
+				if buf.Len() > 0 {
+					s := buf.String()
+					buf.Reset()
+					for _, ln := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+						if ln != "" {
+							out <- line{label: label, text: ln}
+						}
+					}
 				}
-				text := renderJSONLine(l.Text)
-				if text != "" {
-					out <- line{label: label, text: text}
+			}
+
+			for {
+				select {
+				case l, ok := <-t.Lines:
+					if !ok {
+						flush()
+						return
+					}
+					if l.Err != nil {
+						continue
+					}
+					delta, other := classifyEvent(l.Text)
+					if delta != "" {
+						buf.WriteString(delta)
+						if strings.Contains(delta, "\n") {
+							parts := strings.Split(buf.String(), "\n")
+							for _, p := range parts[:len(parts)-1] {
+								if p != "" {
+									out <- line{label: label, text: p}
+								}
+							}
+							buf.Reset()
+							buf.WriteString(parts[len(parts)-1])
+						}
+						if buf.Len() > 0 {
+							flushTimer.Reset(150 * time.Millisecond)
+						}
+					} else {
+						if !flushTimer.Stop() {
+							select {
+							case <-flushTimer.C:
+							default:
+							}
+						}
+						flush()
+						if other != "" {
+							out <- line{label: label, text: other}
+						}
+					}
+				case <-flushTimer.C:
+					flush()
 				}
 			}
 		}(s, label)
@@ -201,9 +253,6 @@ func renderJSONLine(line string) string {
 		}
 		aeType, _ := ae["type"].(string)
 		switch aeType {
-		case "text_delta":
-			delta, _ := ae["delta"].(string)
-			return delta
 		case "thinking_start":
 			return "💭 thinking..."
 		}
@@ -271,4 +320,24 @@ func renderJSONLine(line string) string {
 		return "---"
 	}
 	return ""
+}
+
+// classifyEvent parses a JSON line. If it is a text_delta, returns the delta text.
+// Otherwise returns the rendered string from renderJSONLine.
+func classifyEvent(line string) (delta string, other string) {
+	var event map[string]interface{}
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return "", ""
+	}
+	eventType, _ := event["type"].(string)
+	if eventType == "message_update" {
+		ae, _ := event["assistantMessageEvent"].(map[string]interface{})
+		if ae != nil {
+			if aeType, _ := ae["type"].(string); aeType == "text_delta" {
+				d, _ := ae["delta"].(string)
+				return d, ""
+			}
+		}
+	}
+	return "", renderJSONLine(line)
 }
