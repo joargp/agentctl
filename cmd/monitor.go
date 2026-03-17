@@ -107,6 +107,7 @@ func runMonitor(_ *cobra.Command, args []string) error {
 			}
 			defer t.Cleanup()
 			var buf strings.Builder
+			inThinking := false
 			flushTimer := time.NewTimer(0)
 			if !flushTimer.Stop() {
 				<-flushTimer.C
@@ -118,6 +119,9 @@ func runMonitor(_ *cobra.Command, args []string) error {
 					buf.Reset()
 					for _, ln := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
 						if ln != "" {
+							if inThinking {
+								ln = "💭 " + ln
+							}
 							out <- line{label: label, text: ln}
 						}
 					}
@@ -134,13 +138,23 @@ func runMonitor(_ *cobra.Command, args []string) error {
 					if l.Err != nil {
 						continue
 					}
-					delta, other := classifyEvent(l.Text)
+					delta, deltaKind, other := classifyEvent(l.Text)
 					if delta != "" {
+						if deltaKind == "thinking" && !inThinking {
+							flush()
+							inThinking = true
+						} else if deltaKind == "text" && inThinking {
+							flush()
+							inThinking = false
+						}
 						buf.WriteString(delta)
 						if strings.Contains(delta, "\n") {
 							parts := strings.Split(buf.String(), "\n")
 							for _, p := range parts[:len(parts)-1] {
 								if p != "" {
+									if inThinking {
+										p = "💭 " + p
+									}
 									out <- line{label: label, text: p}
 								}
 							}
@@ -274,23 +288,6 @@ func renderJSONLine(line string) string {
 		}
 		return msg
 	case "tool_execution_update":
-		// Streaming partial output from tool (e.g., bash stdout)
-		partialResult, _ := event["partialResult"].(map[string]interface{})
-		if partialResult != nil {
-			content, _ := partialResult["content"].([]interface{})
-			for _, c := range content {
-				cm, _ := c.(map[string]interface{})
-				if t, _ := cm["type"].(string); t == "text" {
-					text, _ := cm["text"].(string)
-					if text != "" {
-						if len(text) > 200 {
-							text = text[:197] + "..."
-						}
-						return "  " + text
-					}
-				}
-			}
-		}
 		return ""
 	case "tool_execution_end":
 		isError, _ := event["isError"].(bool)
@@ -322,22 +319,27 @@ func renderJSONLine(line string) string {
 	return ""
 }
 
-// classifyEvent parses a JSON line. If it is a text_delta, returns the delta text.
+// classifyEvent parses a JSON line. If it is a text or thinking delta, returns the delta text and kind.
 // Otherwise returns the rendered string from renderJSONLine.
-func classifyEvent(line string) (delta string, other string) {
+func classifyEvent(line string) (delta string, deltaKind string, other string) {
 	var event map[string]interface{}
 	if err := json.Unmarshal([]byte(line), &event); err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	eventType, _ := event["type"].(string)
 	if eventType == "message_update" {
 		ae, _ := event["assistantMessageEvent"].(map[string]interface{})
 		if ae != nil {
-			if aeType, _ := ae["type"].(string); aeType == "text_delta" {
+			aeType, _ := ae["type"].(string)
+			if aeType == "thinking_delta" {
 				d, _ := ae["delta"].(string)
-				return d, ""
+				return d, "thinking", ""
+			}
+			if aeType == "text_delta" {
+				d, _ := ae["delta"].(string)
+				return d, "text", ""
 			}
 		}
 	}
-	return "", renderJSONLine(line)
+	return "", "", renderJSONLine(line)
 }

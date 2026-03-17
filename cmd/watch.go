@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"github.com/joargp/agentctl/internal/notify"
 	"github.com/joargp/agentctl/internal/session"
 	"github.com/joargp/agentctl/internal/tmux"
+	"github.com/nxadm/tail"
 	"github.com/spf13/cobra"
 )
 
@@ -25,6 +27,7 @@ var (
 	watchNotifyEventDir     string
 	watchNotifyEventChannel string
 	watchNotifyEventThread  string
+	watchProgress           bool
 )
 
 func init() {
@@ -32,6 +35,7 @@ func init() {
 	watchCmd.Flags().StringVar(&watchNotifyEventDir, "notify-event-dir", "", "directory to write a completion event JSON file to")
 	watchCmd.Flags().StringVar(&watchNotifyEventChannel, "notify-event-channel", "", "channel ID to include in the completion event")
 	watchCmd.Flags().StringVar(&watchNotifyEventThread, "notify-event-thread", "", "optional thread ts to include in the completion event")
+	watchCmd.Flags().BoolVar(&watchProgress, "progress", false, "emit progress events while waiting for completion")
 	rootCmd.AddCommand(watchCmd)
 }
 
@@ -41,6 +45,7 @@ func runWatch(_ *cobra.Command, args []string) error {
 		EventDir:     watchNotifyEventDir,
 		EventChannel: watchNotifyEventChannel,
 		EventThread:  watchNotifyEventThread,
+		Progress:     watchProgress,
 	}
 	if err := validateWatcherNotifyOptions(notifyOptions); err != nil {
 		return err
@@ -55,9 +60,21 @@ func runWatch(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("load session %s: %w", id, err)
 	}
 
+	var progress *progressTailer
+	if notifyOptions.Progress && notifyOptions.EventDir != "" {
+		progress, err = startProgressTailer(s, notifyOptions)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "agentctl watch: progress tailer failed: %v\n", err)
+		}
+	}
+
 	// Poll until the tmux session is gone.
 	for tmux.SessionExists(s.TmuxSession) {
 		time.Sleep(500 * time.Millisecond)
+	}
+
+	if progress != nil {
+		progress.Stop()
 	}
 
 	var errs []error
@@ -70,6 +87,10 @@ func runWatch(_ *cobra.Command, args []string) error {
 	}
 
 	if notifyOptions.EventDir != "" {
+		if err := notify.CleanupProgressFiles(notifyOptions.EventDir, s.ID); err != nil {
+			errs = append(errs, fmt.Errorf("cleanup progress files failed: %w", err))
+		}
+
 		metadata := map[string]string{
 			"source": "agentctl",
 			"event":  "subagent_done",
@@ -99,6 +120,93 @@ func runWatch(_ *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 	return nil
+}
+
+type progressTailer struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func startProgressTailer(s *session.Session, opts watcherNotifyOptions) (*progressTailer, error) {
+	t, err := tail.TailFile(s.LogFile, tail.Config{
+		Follow:    true,
+		ReOpen:    true,
+		MustExist: false,
+		Logger:    tail.DiscardingLogger,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("tail %s: %w", s.LogFile, err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	pt := &progressTailer{
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+	go pt.run(ctx, t, s, opts)
+	return pt, nil
+}
+
+func (p *progressTailer) Stop() {
+	if p == nil {
+		return
+	}
+	p.cancel()
+	<-p.done
+}
+
+func (p *progressTailer) run(ctx context.Context, t *tail.Tail, s *session.Session, opts watcherNotifyOptions) {
+	defer close(p.done)
+	defer t.Cleanup()
+
+	lastStatus := ""
+	turnCount := 0
+	draining := false
+
+	for {
+		if draining {
+			select {
+			case line, ok := <-t.Lines:
+				if !ok {
+					return
+				}
+				emitProgressLine(line, s, opts, &turnCount, &lastStatus)
+			default:
+				return
+			}
+			continue
+		}
+
+		select {
+		case <-ctx.Done():
+			draining = true
+			_ = t.Stop()
+		case line, ok := <-t.Lines:
+			if !ok {
+				return
+			}
+			emitProgressLine(line, s, opts, &turnCount, &lastStatus)
+		}
+	}
+}
+
+func emitProgressLine(line *tail.Line, s *session.Session, opts watcherNotifyOptions, turnCount *int, lastStatus *string) {
+	if line == nil || line.Err != nil {
+		return
+	}
+
+	activity := session.ParseActivityLine(line.Text, turnCount)
+	if activity.Status == "" || activity.Status == *lastStatus {
+		return
+	}
+
+	*lastStatus = activity.Status
+	_ = notify.WriteProgressEvent(opts.EventDir, notify.ProgressEvent{
+		ChannelID:  opts.EventChannel,
+		ThreadTs:   opts.EventThread,
+		SubagentID: s.ID,
+		Text:       activity.Status,
+	})
 }
 
 func completionMessage(s *session.Session) string {

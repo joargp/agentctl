@@ -164,3 +164,28 @@ func TestResolveWatcherNotifyOptionsExplicitEventNotifierSuppressesPiSessionFall
 		t.Fatalf("expected explicit event notifier to suppress PI_SESSION_ID fallback, got %q", options.PiSessionID)
 	}
 }
+
+func TestWatcherArgsIncludesProgressFlag(t *testing.T) {
+	args := watcherArgs("abc123", watcherNotifyOptions{
+		EventDir:     "/workspace/events",
+		EventChannel: "C123",
+		EventThread:  "1710000000.000100",
+		Progress:     true,
+	})
+
+	expected := []string{
+		"watch", "abc123",
+		"--notify-event-dir", "/workspace/events",
+		"--notify-event-channel", "C123",
+		"--notify-event-thread", "1710000000.000100",
+		"--progress",
+	}
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+	for i := range expected {
+		if args[i] != expected[i] {
+			t.Fatalf("expected args[%d] = %q, got %q (all args: %v)", i, expected[i], args[i], args)
+		}
+	}
+}

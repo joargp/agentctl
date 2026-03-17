@@ -1,14 +1,17 @@
 package cmd
 
 import (
+	"encoding/json"
 	"testing"
+
+	sessionpkg "github.com/joargp/agentctl/internal/session"
 )
 
 func TestParseLastActivityThinking(t *testing.T) {
 	input := []byte(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}
 {"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"Let me think"}}
 `)
-	state, detail := parseLastActivity(input)
+	state, detail := sessionpkg.ParseLastActivity(input)
 	if state != "thinking" {
 		t.Fatalf("expected 'thinking', got %q", state)
 	}
@@ -20,7 +23,7 @@ func TestParseLastActivityThinking(t *testing.T) {
 func TestParseLastActivityRunningBash(t *testing.T) {
 	input := []byte(`{"type":"tool_execution_start","toolCallId":"abc","toolName":"bash","args":{"command":"echo hello"}}
 `)
-	state, detail := parseLastActivity(input)
+	state, detail := sessionpkg.ParseLastActivity(input)
 	if state != "running bash" {
 		t.Fatalf("expected 'running bash', got %q", state)
 	}
@@ -32,7 +35,7 @@ func TestParseLastActivityRunningBash(t *testing.T) {
 func TestParseLastActivityWriting(t *testing.T) {
 	input := []byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"Hello world"}}
 `)
-	state, detail := parseLastActivity(input)
+	state, detail := sessionpkg.ParseLastActivity(input)
 	if state != "writing" {
 		t.Fatalf("expected 'writing', got %q", state)
 	}
@@ -45,7 +48,7 @@ func TestParseLastActivityTurnEnd(t *testing.T) {
 	input := []byte(`{"type":"turn_start"}
 {"type":"turn_end"}
 `)
-	state, _ := parseLastActivity(input)
+	state, _ := sessionpkg.ParseLastActivity(input)
 	if state != "completed turn 1" {
 		t.Fatalf("expected 'completed turn 1', got %q", state)
 	}
@@ -58,28 +61,39 @@ func TestParseLastActivityAgentEnd(t *testing.T) {
 {"type":"turn_end"}
 {"type":"agent_end","messages":[]}
 `)
-	state, _ := parseLastActivity(input)
+	state, _ := sessionpkg.ParseLastActivity(input)
 	if state != "finished (2 turns)" {
 		t.Fatalf("expected 'finished (2 turns)', got %q", state)
 	}
 }
 
 func TestParseLastActivityEmpty(t *testing.T) {
-	state, _ := parseLastActivity([]byte(""))
+	state, _ := sessionpkg.ParseLastActivity([]byte(""))
 	if state != "starting" {
 		t.Fatalf("expected 'starting', got %q", state)
 	}
 }
 
-func TestTruncate(t *testing.T) {
-	if truncate("short", 20) != "short" {
-		t.Fatal("short string should not be truncated")
+func TestFormatEventStatus(t *testing.T) {
+	var event map[string]interface{}
+	if err := json.Unmarshal([]byte(`{"type":"tool_execution_start","toolName":"read","args":{"path":"cmd/watch.go"}}`), &event); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
 	}
-	result := truncate("this is a very long string that should be truncated", 20)
-	if len(result) > 20 {
-		t.Fatalf("expected max 20 chars, got %d", len(result))
+
+	status := sessionpkg.FormatEventStatus(event, new(int))
+	if status != "📖 Reading `cmd/watch.go`" {
+		t.Fatalf("expected progress status for read, got %q", status)
 	}
-	if result[len(result)-3:] != "..." {
-		t.Fatal("expected truncation suffix ...")
+}
+
+func TestFormatEventStatusIgnoresTextDelta(t *testing.T) {
+	var event map[string]interface{}
+	if err := json.Unmarshal([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"Hello"}}`), &event); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	status := sessionpkg.FormatEventStatus(event, new(int))
+	if status != "" {
+		t.Fatalf("expected empty status for text_delta, got %q", status)
 	}
 }

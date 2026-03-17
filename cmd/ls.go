@@ -111,7 +111,7 @@ func runLs(_ *cobra.Command, _ []string) error {
 			// Only read the tail of the log for performance on large files.
 			data := readTail(s.LogFile, 64*1024)
 			if len(data) > 0 {
-				state, _ := parseLastActivity(data)
+				state, _ := session.ParseLastActivity(data)
 				status = state
 			} else {
 				status = "starting"

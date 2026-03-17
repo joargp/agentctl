@@ -6,10 +6,12 @@ package notify
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -20,11 +22,12 @@ type sendCmd struct {
 }
 
 type eventFile struct {
-	Type      string            `json:"type"`
-	ChannelID string            `json:"channelId"`
-	Text      string            `json:"text"`
-	ThreadTs  string            `json:"threadTs,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	Type       string            `json:"type"`
+	ChannelID  string            `json:"channelId"`
+	Text       string            `json:"text"`
+	ThreadTs   string            `json:"threadTs,omitempty"`
+	SubagentID string            `json:"subagentId,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
 }
 
 // ImmediateEvent describes a file-based immediate event notification.
@@ -33,6 +36,14 @@ type ImmediateEvent struct {
 	Text      string
 	ThreadTs  string
 	Metadata  map[string]string
+}
+
+// ProgressEvent describes a file-based progress update notification.
+type ProgressEvent struct {
+	ChannelID  string
+	ThreadTs   string
+	SubagentID string
+	Text       string
 }
 
 // SendFollowUp delivers message to the pi session identified by sessionID as a
@@ -100,6 +111,85 @@ func WriteImmediateEvent(dir string, event ImmediateEvent) error {
 	data = append(data, '\n')
 
 	base := fmt.Sprintf("agentctl-done-%d-%d", time.Now().UnixNano(), os.Getpid())
+	if err := writeEventFile(dir, base, data); err != nil {
+		return fmt.Errorf("write immediate event: %w", err)
+	}
+	return nil
+}
+
+// WriteProgressEvent writes a progress event JSON file atomically.
+func WriteProgressEvent(dir string, event ProgressEvent) error {
+	if dir == "" {
+		return fmt.Errorf("event dir is required")
+	}
+	if event.ChannelID == "" {
+		return fmt.Errorf("event channel ID is required")
+	}
+	if event.SubagentID == "" {
+		return fmt.Errorf("subagent ID is required")
+	}
+	if event.Text == "" {
+		return fmt.Errorf("event text is required")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create event dir: %w", err)
+	}
+
+	payload := eventFile{
+		Type:       "progress",
+		ChannelID:  event.ChannelID,
+		ThreadTs:   event.ThreadTs,
+		SubagentID: event.SubagentID,
+		Text:       event.Text,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal event: %w", err)
+	}
+	data = append(data, '\n')
+
+	base := fmt.Sprintf("progress-%s-%d-%d", event.SubagentID, time.Now().UnixNano(), os.Getpid())
+	if err := writeEventFile(dir, base, data); err != nil {
+		return fmt.Errorf("write progress event: %w", err)
+	}
+	return nil
+}
+
+// CleanupProgressFiles removes unread progress event files for the given subagent.
+func CleanupProgressFiles(dir, subagentID string) error {
+	if dir == "" || subagentID == "" {
+		return nil
+	}
+
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read event dir: %w", err)
+	}
+
+	prefix := "progress-" + subagentID + "-"
+	var errs []error
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() {
+			continue
+		}
+		if !(strings.HasPrefix(name, prefix) || strings.HasPrefix(name, "."+prefix)) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, fmt.Errorf("remove %s: %w", name, err))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func writeEventFile(dir, base string, data []byte) error {
 	tmpPath := filepath.Join(dir, "."+base+".tmp")
 	finalPath := filepath.Join(dir, base+".json")
 	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {

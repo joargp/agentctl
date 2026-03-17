@@ -1,10 +1,7 @@
 package cmd
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/joargp/agentctl/internal/session"
@@ -75,7 +72,7 @@ func printSessionStatus(s *session.Session) {
 	// Only read tail of log for performance on large files.
 	data := readTail(s.LogFile, 64*1024)
 	if len(data) > 0 {
-		state, detail = parseLastActivity(data)
+		state, detail = session.ParseLastActivity(data)
 	} else if running {
 		state = "starting"
 	}
@@ -91,91 +88,4 @@ func printSessionStatus(s *session.Session) {
 	} else {
 		fmt.Printf("%s  %s  %s  %s  %s\n", s.ID, label, statusLabel, age, state)
 	}
-}
-
-// parseLastActivity scans the JSON log from the end to determine what the agent
-// is currently doing. Returns a state label and optional detail string.
-func parseLastActivity(data []byte) (string, string) {
-	// Scan backward through the log for the last meaningful event.
-	// We read the whole thing but only care about the last few events.
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
-	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
-
-	var lastState string
-	var lastDetail string
-	turnCount := 0
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
-			continue
-		}
-
-		var event map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-
-		eventType, _ := event["type"].(string)
-		switch eventType {
-		case "message_update":
-			ae, _ := event["assistantMessageEvent"].(map[string]interface{})
-			if ae == nil {
-				continue
-			}
-			aeType, _ := ae["type"].(string)
-			switch aeType {
-			case "thinking_start":
-				lastState = "thinking"
-				lastDetail = ""
-			case "thinking_end":
-				lastState = "writing"
-				lastDetail = ""
-			case "text_delta":
-				lastState = "writing"
-				delta, _ := ae["delta"].(string)
-				lastDetail = truncate(delta, 60)
-			case "text_end":
-				lastState = "writing"
-			}
-		case "tool_execution_start":
-			toolName, _ := event["toolName"].(string)
-			args, _ := event["args"].(map[string]interface{})
-			lastState = "running " + toolName
-			if toolName == "bash" {
-				if cmd, ok := args["command"].(string); ok {
-					lastDetail = truncate(cmd, 60)
-				}
-			} else if toolName == "read" || toolName == "write" || toolName == "edit" {
-				if p, ok := args["path"].(string); ok {
-					lastDetail = p
-				}
-			}
-		case "tool_execution_end":
-			lastState = "writing"
-			lastDetail = ""
-		case "turn_start":
-			turnCount++
-		case "turn_end":
-			lastState = fmt.Sprintf("completed turn %d", turnCount)
-			lastDetail = ""
-		case "agent_end":
-			lastState = fmt.Sprintf("finished (%d turns)", turnCount)
-			lastDetail = ""
-		}
-	}
-
-	if lastState == "" {
-		return "starting", ""
-	}
-	return lastState, lastDetail
-}
-
-func truncate(s string, maxLen int) string {
-	s = strings.TrimSpace(s)
-	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) > maxLen {
-		return s[:maxLen-3] + "..."
-	}
-	return s
 }

@@ -40,6 +40,7 @@ type watcherNotifyOptions struct {
 	EventDir     string
 	EventChannel string
 	EventThread  string
+	Progress     bool
 }
 
 var (
@@ -79,6 +80,7 @@ func runRun(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	notifyOptions.Progress = runNotifyMunin
 
 	id, err := session.NewID()
 	if err != nil {
@@ -254,6 +256,15 @@ func spawnWatcher(agentID string, options watcherNotifyOptions) error {
 		return fmt.Errorf("resolve executable: %w", err)
 	}
 
+	cmd := exec.Command(self, watcherArgs(agentID, options)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // detach from parent process group
+	cmd.Stdin = nil
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Start()
+}
+
+func watcherArgs(agentID string, options watcherNotifyOptions) []string {
 	args := []string{"watch", agentID}
 	if options.PiSessionID != "" {
 		args = append(args, "--notify-session", options.PiSessionID)
@@ -267,13 +278,10 @@ func spawnWatcher(agentID string, options watcherNotifyOptions) error {
 			args = append(args, "--notify-event-thread", options.EventThread)
 		}
 	}
-
-	cmd := exec.Command(self, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // detach from parent process group
-	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Start()
+	if options.Progress {
+		args = append(args, "--progress")
+	}
+	return args
 }
 
 func getenv(key string) string {
