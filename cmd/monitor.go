@@ -288,6 +288,23 @@ func renderJSONLine(line string) string {
 		}
 		return msg
 	case "tool_execution_update":
+		// Streaming partial output from tool (e.g., bash stdout)
+		partialResult, _ := event["partialResult"].(map[string]interface{})
+		if partialResult != nil {
+			content, _ := partialResult["content"].([]interface{})
+			for _, c := range content {
+				cm, _ := c.(map[string]interface{})
+				if t, _ := cm["type"].(string); t == "text" {
+					text, _ := cm["text"].(string)
+					if text != "" {
+						if len(text) > 200 {
+							text = text[:197] + "..."
+						}
+						return "  " + text
+					}
+				}
+			}
+		}
 		return ""
 	case "tool_execution_end":
 		isError, _ := event["isError"].(bool)
