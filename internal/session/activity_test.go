@@ -12,7 +12,7 @@ func TestFormatEventStatusThinkingStart(t *testing.T) {
 	}
 
 	status := FormatEventStatus(event, new(int))
-	if status != "💭 Thinking..." {
+	if status != "thinking" {
 		t.Fatalf("expected thinking status, got %q", status)
 	}
 }
@@ -37,7 +37,31 @@ func TestFormatEventStatusToolError(t *testing.T) {
 	}
 
 	status := FormatEventStatus(event, new(int))
-	if status != "❌ Tool error" {
+	if status != "tool error" {
 		t.Fatalf("expected tool error status, got %q", status)
+	}
+}
+
+func TestFormatEventStatusTextEndUsesVisibleAssistantText(t *testing.T) {
+	var event map[string]interface{}
+	if err := json.Unmarshal([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_end","content":"Sure! Let me write the script and run it in one go."}}`), &event); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	status := FormatEventStatus(event, new(int))
+	if status != "Let me write the script and run it in one go." {
+		t.Fatalf("expected visible assistant text status, got %q", status)
+	}
+}
+
+func TestFormatEventStatusTextEndIgnoresLongAssistantText(t *testing.T) {
+	var event map[string]interface{}
+	if err := json.Unmarshal([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_end","content":"Everything worked perfectly. Here's a summary of what was done: first I wrote the file, then I ran the command, then I summarized the results in detail."}}`), &event); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	status := FormatEventStatus(event, new(int))
+	if status != "" {
+		t.Fatalf("expected long assistant text to be ignored, got %q", status)
 	}
 }

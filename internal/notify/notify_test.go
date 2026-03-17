@@ -82,7 +82,7 @@ func TestWriteProgressEvent(t *testing.T) {
 		ChannelID:  "C123",
 		ThreadTs:   "1710000000.000100",
 		SubagentID: "abc123",
-		Text:       "🔧 Running: `npm test`",
+		Text:       "running `npm test`",
 	})
 	if err != nil {
 		t.Fatalf("WriteProgressEvent returned error: %v", err)
@@ -121,7 +121,7 @@ func TestWriteProgressEvent(t *testing.T) {
 	if payload.SubagentID != "abc123" {
 		t.Fatalf("expected subagent id abc123, got %s", payload.SubagentID)
 	}
-	if payload.Text != "🔧 Running: `npm test`" {
+	if payload.Text != "running `npm test`" {
 		t.Fatalf("expected progress text to round-trip, got %q", payload.Text)
 	}
 }

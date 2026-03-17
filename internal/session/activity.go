@@ -67,46 +67,49 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 		aeType, _ := ae["type"].(string)
 		switch aeType {
 		case "thinking_start":
-			return Activity{State: "thinking", Status: "💭 Thinking..."}
+			return Activity{State: "thinking", Status: "thinking"}
 		case "thinking_end":
 			return Activity{State: "writing"}
 		case "text_delta":
 			delta, _ := ae["delta"].(string)
 			return Activity{State: "writing", Detail: truncateActivityText(delta, 60)}
-		case "text_start", "text_end":
+		case "text_start":
 			return Activity{State: "writing"}
+		case "text_end":
+			content, _ := ae["content"].(string)
+			return Activity{State: "writing", Status: formatAssistantTextStatus(content)}
 		}
 	case "tool_execution_start":
 		toolName, _ := event["toolName"].(string)
 		args, _ := event["args"].(map[string]interface{})
-		activity := Activity{State: "running " + toolName, Status: "🔧 " + toolName}
+		activity := Activity{State: "running " + toolName, Status: toolName}
 		switch toolName {
 		case "bash":
 			if cmd, ok := args["command"].(string); ok {
 				activity.Detail = truncateActivityText(cmd, 60)
-				activity.Status = fmt.Sprintf("🔧 Running: `%s`", truncateActivityText(cmd, 80))
+				activity.Status = fmt.Sprintf("running `%s`", truncateActivityText(cmd, 80))
 			}
 		case "edit":
 			if path, ok := args["path"].(string); ok {
 				activity.Detail = path
-				activity.Status = fmt.Sprintf("✏️ Editing `%s`", path)
+				activity.Status = fmt.Sprintf("editing `%s`", path)
 			}
 		case "write":
 			if path, ok := args["path"].(string); ok {
 				activity.Detail = path
-				activity.Status = fmt.Sprintf("📝 Writing `%s`", path)
+				activity.Status = fmt.Sprintf("writing `%s`", path)
 			}
 		case "read":
 			if path, ok := args["path"].(string); ok {
 				activity.Detail = path
-				activity.Status = fmt.Sprintf("📖 Reading `%s`", path)
+				activity.Status = fmt.Sprintf("reading `%s`", path)
 			}
 		}
 		return activity
 	case "tool_execution_end":
 		isError, _ := event["isError"].(bool)
 		if isError {
-			return Activity{State: "writing", Status: "❌ Tool error"}
+			return Activity{State: "writing", Status: "tool error"}
 		}
 		return Activity{State: "writing"}
 	case "turn_start":
@@ -143,25 +146,23 @@ func actualTurnCount(turnCount *int) int {
 	return *turnCount
 }
 
-func formatTurnCompleteStatus(turn int, event map[string]interface{}) string {
-	msg, _ := event["message"].(map[string]interface{})
-	usage, _ := msg["usage"].(map[string]interface{})
-	if usage == nil {
-		return fmt.Sprintf("✅ Turn %d complete", turn)
+func formatAssistantTextStatus(content string) string {
+	content = strings.Join(strings.Fields(strings.TrimSpace(content)), " ")
+	if content == "" {
+		return ""
+	}
+	if len(content) > 120 {
+		return ""
 	}
 
-	tokens, hasTokens := usage["totalTokens"].(float64)
-	costInfo, _ := usage["cost"].(map[string]interface{})
-	total, hasCost := costInfo["total"].(float64)
-
-	switch {
-	case hasTokens && hasCost && total > 0:
-		return fmt.Sprintf("✅ Turn %d complete (%d tokens, $%.4f)", turn, int(tokens), total)
-	case hasTokens:
-		return fmt.Sprintf("✅ Turn %d complete (%d tokens)", turn, int(tokens))
-	default:
-		return fmt.Sprintf("✅ Turn %d complete", turn)
+	for _, prefix := range []string{"Sure! ", "Sure, ", "Okay, ", "Okay! ", "Alright, ", "All right, "} {
+		content = strings.TrimPrefix(content, prefix)
 	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	return content
 }
 
 func truncateActivityText(s string, maxLen int) string {

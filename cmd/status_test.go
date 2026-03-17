@@ -81,7 +81,7 @@ func TestFormatEventStatus(t *testing.T) {
 	}
 
 	status := sessionpkg.FormatEventStatus(event, new(int))
-	if status != "📖 Reading `cmd/watch.go`" {
+	if status != "reading `cmd/watch.go`" {
 		t.Fatalf("expected progress status for read, got %q", status)
 	}
 }
