@@ -116,8 +116,7 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 		return Activity{}
 	case "turn_end":
 		turn := safeCompletedTurnNumber(turnCount)
-		status := formatTurnCompleteStatus(turn, event)
-		return Activity{State: fmt.Sprintf("completed turn %d", turn), Status: status}
+		return Activity{State: fmt.Sprintf("completed turn %d", turn)}
 	case "agent_end":
 		return Activity{State: fmt.Sprintf("finished (%d turns)", actualTurnCount(turnCount))}
 	}

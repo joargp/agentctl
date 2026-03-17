@@ -17,7 +17,7 @@ func TestFormatEventStatusThinkingStart(t *testing.T) {
 	}
 }
 
-func TestFormatEventStatusTurnEnd(t *testing.T) {
+func TestFormatEventStatusTurnEndIsSilent(t *testing.T) {
 	var event map[string]interface{}
 	if err := json.Unmarshal([]byte(`{"type":"turn_end","message":{"usage":{"totalTokens":12400,"cost":{"total":0.0312}}}}`), &event); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
@@ -25,8 +25,8 @@ func TestFormatEventStatusTurnEnd(t *testing.T) {
 
 	turnCount := 1
 	status := FormatEventStatus(event, &turnCount)
-	if status != "✅ Turn 1 complete (12400 tokens, $0.0312)" {
-		t.Fatalf("expected turn_end status, got %q", status)
+	if status != "" {
+		t.Fatalf("expected empty status for turn_end, got %q", status)
 	}
 }
 
