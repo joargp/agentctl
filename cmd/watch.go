@@ -107,8 +107,33 @@ func completionMessage(s *session.Session) string {
 		task = task[:77] + "..."
 	}
 
-	return fmt.Sprintf(
-		"Agent **%s** (`%s`) finished.\nTask: %s\n\nRun `agentctl dump %s` to read the output.",
-		s.Model, s.ID, task, s.ID,
+	msg := fmt.Sprintf(
+		"Agent **%s** (`%s`) finished.\nTask: %s\n",
+		s.Model, s.ID, task,
 	)
+
+	// Try to include last few lines of rendered output as a summary.
+	// Use readTail for performance on large log files.
+	data := readTail(s.LogFile, 128*1024)
+	if len(data) > 0 {
+		rendered := renderJSONLog(data)
+		lines := splitLines([]byte(rendered))
+		// Take last 20 non-empty lines as summary
+		var summary []string
+		for i := len(lines) - 1; i >= 0 && len(summary) < 20; i-- {
+			if lines[i] != "" {
+				summary = append([]string{lines[i]}, summary...)
+			}
+		}
+		if len(summary) > 0 {
+			msg += "\n**Output (last lines):**\n```\n"
+			for _, l := range summary {
+				msg += l + "\n"
+			}
+			msg += "```\n"
+		}
+	}
+
+	msg += fmt.Sprintf("\nRun `agentctl dump %s` for the full output.", s.ID)
+	return msg
 }

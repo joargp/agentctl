@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/joargp/agentctl/internal/session"
 	"github.com/joargp/agentctl/internal/tmux"
@@ -13,9 +16,11 @@ import (
 )
 
 var monitorCmd = &cobra.Command{
-	Use:   "monitor [id...]",
-	Short: "Stream live output from one or more agent sessions",
-	Long: `Tail the log files of one or more sessions with labeled, interleaved output.
+	Use:               "monitor [id...]",
+	Short:             "Stream live output from one or more agent sessions",
+	ValidArgsFunction: completeSessionIDs,
+	Long: `Tail the JSON log files of one or more sessions with labeled, interleaved output.
+Parses NDJSON events and displays human-readable text (assistant messages, tool calls).
 If no IDs are given, monitors all sessions that are currently running.
 
 Examples:
@@ -104,7 +109,10 @@ func runMonitor(_ *cobra.Command, args []string) error {
 				if l.Err != nil {
 					continue
 				}
-				out <- line{label: label, text: l.Text}
+				text := renderJSONLine(l.Text)
+				if text != "" {
+					out <- line{label: label, text: text}
+				}
 			}
 		}(s, label)
 	}
@@ -114,12 +122,40 @@ func runMonitor(_ *cobra.Command, args []string) error {
 		return fmt.Errorf("no running sessions to monitor")
 	}
 
-	// Print until Ctrl-C
+	var closeOnce sync.Once
+	closeDone := func() { closeOnce.Do(func() { close(done) }) }
+
+	// Stop on Ctrl-C
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		<-sig
-		close(done)
+		closeDone()
+	}()
+
+	// Auto-stop when all monitored sessions finish
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				allDone := true
+				for _, e := range entries {
+					if tmux.SessionExists(e.s.TmuxSession) {
+						allDone = false
+						break
+					}
+				}
+				if allDone {
+					time.Sleep(1 * time.Second) // let final events flush
+					closeDone()
+					return
+				}
+			}
+		}
 	}()
 
 	// Determine label width for alignment.
@@ -147,4 +183,92 @@ func runMonitor(_ *cobra.Command, args []string) error {
 			}
 		}
 	}
+}
+
+// renderJSONLine parses a single NDJSON event and returns human-readable text, or "" to skip.
+func renderJSONLine(line string) string {
+	var event map[string]interface{}
+	if err := json.Unmarshal([]byte(line), &event); err != nil {
+		return ""
+	}
+
+	eventType, _ := event["type"].(string)
+	switch eventType {
+	case "message_update":
+		ae, _ := event["assistantMessageEvent"].(map[string]interface{})
+		if ae == nil {
+			return ""
+		}
+		aeType, _ := ae["type"].(string)
+		switch aeType {
+		case "text_delta":
+			delta, _ := ae["delta"].(string)
+			return delta
+		case "thinking_start":
+			return "💭 thinking..."
+		}
+	case "tool_execution_start":
+		toolName, _ := event["toolName"].(string)
+		args, _ := event["args"].(map[string]interface{})
+		msg := fmt.Sprintf("🔧 %s", toolName)
+		if toolName == "bash" {
+			if cmd, ok := args["command"].(string); ok {
+				if len(cmd) > 80 {
+					cmd = cmd[:77] + "..."
+				}
+				msg += ": " + cmd
+			}
+		} else if toolName == "read" || toolName == "write" || toolName == "edit" {
+			if p, ok := args["path"].(string); ok {
+				msg += ": " + p
+			}
+		}
+		return msg
+	case "tool_execution_update":
+		// Streaming partial output from tool (e.g., bash stdout)
+		partialResult, _ := event["partialResult"].(map[string]interface{})
+		if partialResult != nil {
+			content, _ := partialResult["content"].([]interface{})
+			for _, c := range content {
+				cm, _ := c.(map[string]interface{})
+				if t, _ := cm["type"].(string); t == "text" {
+					text, _ := cm["text"].(string)
+					if text != "" {
+						if len(text) > 200 {
+							text = text[:197] + "..."
+						}
+						return "  " + text
+					}
+				}
+			}
+		}
+		return ""
+	case "tool_execution_end":
+		isError, _ := event["isError"].(bool)
+		if isError {
+			return "❌ tool error"
+		}
+		return ""
+	case "turn_end":
+		// Extract token/cost info
+		msg, _ := event["message"].(map[string]interface{})
+		if msg != nil {
+			usage, _ := msg["usage"].(map[string]interface{})
+			if usage != nil {
+				tokens, _ := usage["totalTokens"].(float64)
+				costInfo, _ := usage["cost"].(map[string]interface{})
+				if tokens > 0 {
+					costStr := ""
+					if costInfo != nil {
+						if total, ok := costInfo["total"].(float64); ok && total > 0 {
+							costStr = fmt.Sprintf(" $%.4f", total)
+						}
+					}
+					return fmt.Sprintf("[%d tokens%s] ---", int(tokens), costStr)
+				}
+			}
+		}
+		return "---"
+	}
+	return ""
 }

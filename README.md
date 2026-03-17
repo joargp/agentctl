@@ -110,11 +110,21 @@ agentctl monitor $id1 $id2
 ### Read output
 
 ```bash
-agentctl dump <id>          # last 100 lines
+agentctl dump <id>          # last 100 lines (rendered from JSON)
 agentctl dump <id> -n 200   # last N lines
+agentctl dump <id> --json   # raw NDJSON events
+agentctl dump <id> --summary # condensed (tool calls + final text only)
+agentctl dump <id> -f       # follow mode (like tail -f, rendered)
+agentctl dump <id> -f --json  # follow mode with raw NDJSON
 ```
 
-Reads from the live pane while running, log file after completion. Useful for feeding agent output back to another LLM.
+Parses the JSON event log and renders human-readable output including assistant text, tool calls with arguments, tool results, token counts, costs, and turn boundaries. Works both while the agent is running and after completion. Follow mode (`-f`) streams output in real-time and stops when the session ends.
+
+### Quick status
+
+```bash
+agentctl status <id>    # one-line summary: "thinking", "running bash: echo hello", etc.
+```
 
 ### Manual intervention
 
@@ -127,9 +137,13 @@ Use this when an agent is waiting for confirmation or needs auth.
 ### List & clean up
 
 ```bash
-agentctl ls             # list sessions with status (running / done)
-agentctl kill <id>      # kill session, preserve log
-agentctl kill --all     # kill all sessions
+agentctl ls                 # list sessions with status, cost, and activity
+agentctl ls --since 1d      # only sessions from the last day
+agentctl ls --model opus    # filter by model name
+agentctl costs              # total API costs across all sessions
+agentctl costs --since 1d   # costs from the last day only
+agentctl kill <id>          # kill session, preserve log
+agentctl kill --all         # kill all sessions
 ```
 
 ## How it works
@@ -137,10 +151,12 @@ agentctl kill --all     # kill all sessions
 Each `agentctl run` creates a tmux session that runs:
 
 ```sh
-exec pi --model <model> --no-session -p "<task>"
+pi --mode json --model <model> --no-session -p "<task>" 2>&1 | tee -a <logfile>
 ```
 
-Output is streamed to a log file via `tmux pipe-pane`. When pi exits the tmux session is destroyed automatically, flipping the session status to `done`.
+Pi runs in JSON mode, producing streaming NDJSON events (text deltas, tool calls, tool results) that are redirected to a log file. This enables real-time progress monitoring via `dump` and `monitor` while the agent is working.
+
+When pi exits the tmux session is destroyed automatically, flipping the session status to `done`.
 
 When `--notify-session`, `--notify-munin`, or `--notify-event-dir` is set, `agentctl` also spawns a detached watcher process that waits for the tmux session to disappear and then sends the configured completion notification(s).
 
@@ -151,8 +167,10 @@ Session metadata is stored in `~/.local/share/agentctl/sessions/`. Log files liv
 | Command | Description |
 |---|---|
 | `run --model <m> --task <t>` | Spawn a pi agent session |
-| `ls` | List sessions with status and age |
+| `ls` | List sessions with status, age, and cost |
+| `status <id>` | One-line summary (thinking, running bash, writing...) |
 | `monitor [id...]` | Stream live labeled output |
-| `dump <id> [-n lines]` | Print last N lines of output |
+| `dump <id> [-n] [-f] [--json]` | Print/follow rendered output (or raw JSON) |
 | `attach <id>` | Attach terminal for manual intervention |
+| `costs` | Show per-session and total API costs |
 | `kill <id> / --all` | Kill session(s), preserve logs |

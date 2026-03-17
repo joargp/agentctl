@@ -105,18 +105,21 @@ func runRun(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("write task file: %w", err)
 	}
 
-	// Wrapper script: cd, read task, exec pi (exec so session dies when pi exits).
+	// Wrapper script: cd, read task, exec pi in JSON mode with stdout tee'd
+	// to both the log file and the terminal. JSON mode produces streaming NDJSON
+	// events instead of TUI rendering, which means every event is captured in
+	// real-time. Using tee means 'agentctl attach' also shows live output.
 	script := fmt.Sprintf(`#!/bin/sh
 set -e
 cd %s
 task=$(cat %s)
-exec pi --model %s --no-session -p "$task"
-`, shellQuote(cwd), shellQuote(taskFile), shellQuote(runModel))
+exec pi --mode json --model %s --no-session -p "$task" 2>&1 | tee -a %s
+`, shellQuote(cwd), shellQuote(taskFile), shellQuote(runModel), shellQuote(logFile))
 	if err := os.WriteFile(scriptFile, []byte(script), 0o755); err != nil {
 		return fmt.Errorf("write script: %w", err)
 	}
 
-	// Ensure log file exists before pipe-pane (cat >> needs the parent dir).
+	// Ensure log file exists before pi starts writing to it.
 	if f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
 		f.Close()
 	}
@@ -129,9 +132,7 @@ exec pi --model %s --no-session -p "$task"
 	if err := tmux.NewSession(tmuxSession, "sh", scriptFile); err != nil {
 		return err
 	}
-	if err := tmux.PipePaneToFile(tmuxSession, logFile); err != nil {
-		return err
-	}
+	// Note: we don't use pipe-pane anymore since pi --mode json redirects directly to the log file.
 
 	sess := &session.Session{
 		ID:          id,

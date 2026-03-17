@@ -9,8 +9,9 @@ import (
 )
 
 var attachCmd = &cobra.Command{
-	Use:   "attach <id>",
-	Short: "Attach your terminal to a running agent session",
+	Use:               "attach <id>",
+	Short:             "Attach your terminal to a running agent session",
+	ValidArgsFunction: completeSessionIDs,
 	Long: `Hands your terminal directly to the tmux session so you can watch or
 intervene (e.g. answer a confirmation prompt). Detach with Ctrl+b d.
 

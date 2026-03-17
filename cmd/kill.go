@@ -10,8 +10,9 @@ import (
 )
 
 var killCmd = &cobra.Command{
-	Use:   "kill <id>",
-	Short: "Kill an agent session and clean up its files",
+	Use:               "kill <id>",
+	Short:             "Kill an agent session and clean up its files",
+	ValidArgsFunction: completeSessionIDs,
 	Long: `Kills the tmux session and removes the session metadata.
 Log files are preserved so you can still run 'dump' afterwards.
 
@@ -21,10 +22,14 @@ Examples:
 	RunE: runKill,
 }
 
-var killAll bool
+var (
+	killAll   bool
+	killClean bool
+)
 
 func init() {
 	killCmd.Flags().BoolVar(&killAll, "all", false, "kill all sessions")
+	killCmd.Flags().BoolVar(&killClean, "clean", false, "also remove log files (default: preserve logs)")
 	rootCmd.AddCommand(killCmd)
 }
 
@@ -48,8 +53,12 @@ func killOne(id string) error {
 			fmt.Fprintf(os.Stderr, "warn: kill tmux session: %v\n", err)
 		}
 	}
-	// Remove script/task files but keep the log.
-	for _, f := range []string{s.ScriptFile, s.TaskFile} {
+	// Remove script/task files. Log is preserved unless --clean is set.
+	filesToRemove := []string{s.ScriptFile, s.TaskFile}
+	if killClean {
+		filesToRemove = append(filesToRemove, s.LogFile)
+	}
+	for _, f := range filesToRemove {
 		if f != "" {
 			_ = os.Remove(f)
 		}
