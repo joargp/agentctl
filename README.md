@@ -26,9 +26,14 @@ Requires `tmux` and `pi` in `$PATH`.
 # Fire and forget — capture the ID
 id=$(agentctl run --model claude-opus-4-6 --task "add unit tests to the auth module" --cwd /repos/myapp 2>/dev/null)
 
+# Or pass task from file (safer for large prompts)
+id=$(agentctl run --model claude-opus-4-6 --task-file /tmp/task.txt --cwd /repos/myapp 2>/dev/null)
+
 # Block until done
 agentctl run --model claude-opus-4-6 --task "fix the failing tests" --cwd /repos/myapp --wait
 ```
+
+Exactly one of `--task` or `--task-file` must be provided.
 
 The session ID is printed to **stdout**; hints go to **stderr** so `id=$(agentctl run ...)` works cleanly.
 
@@ -151,10 +156,10 @@ agentctl kill --all         # kill all sessions
 Each `agentctl run` creates a tmux session that runs:
 
 ```sh
-pi --mode json --model <model> --no-session -p "<task>" 2>&1 | tee -a <logfile>
+pi --mode json --model <model> --no-session -p "<task>" 2>&1 | agentctl record <logfile>
 ```
 
-Pi runs in JSON mode, producing streaming NDJSON events (text deltas, tool calls, tool results) that are redirected to a log file. This enables real-time progress monitoring via `dump` and `monitor` while the agent is working.
+Pi runs in JSON mode, producing streaming NDJSON events (text deltas, tool calls, tool results). `agentctl record` mirrors the raw stream to the terminal while stripping large `partial`/`message` payloads from `thinking_delta` and `text_delta` events before persisting them to the log file. This keeps recordings linear in size and still enables real-time progress monitoring via `dump` and `monitor`.
 
 When pi exits the tmux session is destroyed automatically, flipping the session status to `done`.
 
@@ -166,7 +171,7 @@ Session metadata is stored in `~/.local/share/agentctl/sessions/`. Log files liv
 
 | Command | Description |
 |---|---|
-| `run --model <m> --task <t>` | Spawn a pi agent session |
+| `run --model <m> (--task <t>\|--task-file <path>)` | Spawn a pi agent session |
 | `ls` | List sessions with status, age, and cost |
 | `status <id>` | One-line summary (thinking, running bash, writing...) |
 | `monitor [id...]` | Stream live labeled output |

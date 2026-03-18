@@ -27,10 +27,11 @@ var runCmd = &cobra.Command{
 	Long: `Spawn pi with the given model and task inside a tmux session.
 
 Prints the session ID to stdout immediately, then returns (or blocks with --wait).
-The agent's full output is streamed to a log file via tmux pipe-pane.
+The agent's output is streamed to a log file with large delta payloads stripped.
 
 Examples:
   agentctl run --model claude-4.6 --task "add tests for the auth module"
+  agentctl run --model o3 --task-file /tmp/task.txt --cwd /repos/myapp
   agentctl run --model o3 --task "review this PR" --cwd /repos/myapp --wait`,
 	RunE: runRun,
 }
@@ -46,6 +47,7 @@ type watcherNotifyOptions struct {
 var (
 	runModel              string
 	runTask               string
+	runTaskFile           string
 	runCwd                string
 	runName               string
 	runWait               bool
@@ -58,7 +60,8 @@ var (
 
 func init() {
 	runCmd.Flags().StringVar(&runModel, "model", "", "model to pass to pi (required)")
-	runCmd.Flags().StringVar(&runTask, "task", "", "task prompt (required)")
+	runCmd.Flags().StringVar(&runTask, "task", "", "task prompt (mutually exclusive with --task-file)")
+	runCmd.Flags().StringVar(&runTaskFile, "task-file", "", "path to file containing task prompt (mutually exclusive with --task)")
 	runCmd.Flags().StringVar(&runCwd, "cwd", "", "working directory (default: current dir)")
 	runCmd.Flags().StringVar(&runName, "name", "", "short label for monitor output (default: model name)")
 	runCmd.Flags().BoolVar(&runWait, "wait", false, "block until the agent session finishes")
@@ -82,6 +85,15 @@ func runRun(_ *cobra.Command, _ []string) error {
 	}
 	notifyOptions.Progress = runNotifyMunin
 
+	if runModel == "" {
+		return fmt.Errorf("--model is required")
+	}
+
+	task, err := resolveRunTask(runTask, runTaskFile)
+	if err != nil {
+		return err
+	}
+
 	id, err := session.NewID()
 	if err != nil {
 		return err
@@ -103,20 +115,20 @@ func runRun(_ *cobra.Command, _ []string) error {
 
 	// Write task to a file so the shell script can read it safely,
 	// avoiding any quoting issues with the task content.
-	if err := os.WriteFile(taskFile, []byte(runTask), 0o644); err != nil {
+	if err := os.WriteFile(taskFile, []byte(task), 0o644); err != nil {
 		return fmt.Errorf("write task file: %w", err)
 	}
 
-	// Wrapper script: cd, read task, exec pi in JSON mode with stdout tee'd
-	// to both the log file and the terminal. JSON mode produces streaming NDJSON
-	// events instead of TUI rendering, which means every event is captured in
-	// real-time. Using tee means 'agentctl attach' also shows live output.
-	script := fmt.Sprintf(`#!/bin/sh
-set -e
-cd %s
-task=$(cat %s)
-exec pi --mode json --model %s --no-session -p "$task" 2>&1 | tee -a %s
-`, shellQuote(cwd), shellQuote(taskFile), shellQuote(runModel), shellQuote(logFile))
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable: %w", err)
+	}
+
+	// Wrapper script: cd, read task, exec pi in JSON mode, mirror raw output to
+	// the terminal, and write a sanitized NDJSON stream to the log file. Delta
+	// events can otherwise include full accumulated content and make logs grow
+	// quadratically.
+	script := buildRunScript(cwd, taskFile, runModel, logFile, self)
 	if err := os.WriteFile(scriptFile, []byte(script), 0o755); err != nil {
 		return fmt.Errorf("write script: %w", err)
 	}
@@ -140,7 +152,7 @@ exec pi --mode json --model %s --no-session -p "$task" 2>&1 | tee -a %s
 		ID:          id,
 		Name:        runName,
 		Model:       runModel,
-		Task:        runTask,
+		Task:        task,
 		Cwd:         cwd,
 		TmuxSession: tmuxSession,
 		LogFile:     logFile,
@@ -183,6 +195,15 @@ exec pi --mode json --model %s --no-session -p "$task" 2>&1 | tee -a %s
 	}
 
 	return nil
+}
+
+func buildRunScript(cwd, taskFile, model, logFile, self string) string {
+	return fmt.Sprintf(`#!/bin/sh
+set -e
+cd %s
+task=$(cat %s)
+exec pi --mode json --model %s --no-session -p "$task" 2>&1 | %s record %s
+`, shellQuote(cwd), shellQuote(taskFile), shellQuote(model), shellQuote(self), shellQuote(logFile))
 }
 
 func resolveWatcherNotifyOptions(notifyMunin bool, getenv func(string) string) (watcherNotifyOptions, error) {
@@ -282,6 +303,24 @@ func watcherArgs(agentID string, options watcherNotifyOptions) []string {
 		args = append(args, "--progress")
 	}
 	return args
+}
+
+func resolveRunTask(task string, taskFile string) (string, error) {
+	hasTask := task != ""
+	hasTaskFile := taskFile != ""
+	if hasTask == hasTaskFile {
+		return "", fmt.Errorf("exactly one of --task or --task-file must be provided")
+	}
+
+	if hasTask {
+		return task, nil
+	}
+
+	taskBytes, err := os.ReadFile(taskFile)
+	if err != nil {
+		return "", fmt.Errorf("read --task-file %q: %w", taskFile, err)
+	}
+	return string(taskBytes), nil
 }
 
 func getenv(key string) string {

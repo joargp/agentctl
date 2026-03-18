@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -187,5 +190,51 @@ func TestWatcherArgsIncludesProgressFlag(t *testing.T) {
 		if args[i] != expected[i] {
 			t.Fatalf("expected args[%d] = %q, got %q (all args: %v)", i, expected[i], args[i], args)
 		}
+	}
+}
+
+func TestBuildRunScriptUsesRecorder(t *testing.T) {
+	script := buildRunScript("/tmp/work", "/tmp/task.txt", "o3", "/tmp/run.log", "/usr/local/bin/agentctl")
+
+	if strings.Contains(script, "tee -a") {
+		t.Fatalf("expected run script to stop using tee, got %q", script)
+	}
+	if !strings.Contains(script, "'/usr/local/bin/agentctl' record '/tmp/run.log'") {
+		t.Fatalf("expected run script to invoke recorder, got %q", script)
+	}
+}
+
+func TestResolveRunTaskWithInlineTask(t *testing.T) {
+	task, err := resolveRunTask("do work", "")
+	if err != nil {
+		t.Fatalf("resolveRunTask returned error: %v", err)
+	}
+	if task != "do work" {
+		t.Fatalf("expected inline task, got %q", task)
+	}
+}
+
+func TestResolveRunTaskWithTaskFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	taskPath := filepath.Join(tmpDir, "task.txt")
+	if err := os.WriteFile(taskPath, []byte("file task"), 0o644); err != nil {
+		t.Fatalf("write task file: %v", err)
+	}
+
+	task, err := resolveRunTask("", taskPath)
+	if err != nil {
+		t.Fatalf("resolveRunTask returned error: %v", err)
+	}
+	if task != "file task" {
+		t.Fatalf("expected task file content, got %q", task)
+	}
+}
+
+func TestResolveRunTaskRejectsBothOrNeither(t *testing.T) {
+	if _, err := resolveRunTask("", ""); err == nil {
+		t.Fatal("expected error when neither --task nor --task-file is provided")
+	}
+	if _, err := resolveRunTask("inline", "/tmp/task.txt"); err == nil {
+		t.Fatal("expected error when both --task and --task-file are provided")
 	}
 }
