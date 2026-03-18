@@ -11,9 +11,10 @@ import (
 // Status is the human-readable progress string emitted for external notifications.
 // It is empty for events that should not produce a progress update.
 type Activity struct {
-	State  string
-	Detail string
-	Status string
+	State   string
+	Detail  string
+	Status  string
+	Replace bool
 }
 
 // ParseLastActivity scans the JSON log and returns the last meaningful activity
@@ -67,15 +68,8 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 		aeType, _ := ae["type"].(string)
 		switch aeType {
 		case "thinking_start":
-			return Activity{State: "thinking", Status: "thinking"}
+			return Activity{State: "thinking", Status: "Thinking..."}
 		case "thinking_end":
-			// If thinking_end includes content, extract a summary
-			if content, ok := ae["content"].(string); ok && content != "" {
-				summary := formatThinkingSummary(content)
-				if summary != "" {
-					return Activity{State: "writing", Status: summary}
-				}
-			}
 			return Activity{State: "writing"}
 		case "text_delta":
 			delta, _ := ae["delta"].(string)
@@ -84,32 +78,36 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 			return Activity{State: "writing"}
 		case "text_end":
 			content, _ := ae["content"].(string)
-			return Activity{State: "writing", Status: formatAssistantTextStatus(content)}
+			return Activity{State: "writing", Status: formatAssistantTextStatus(content), Replace: true}
 		}
 	case "tool_execution_start":
 		toolName, _ := event["toolName"].(string)
 		args, _ := event["args"].(map[string]interface{})
-		activity := Activity{State: "running " + toolName, Status: toolName}
+		activity := Activity{State: "running " + toolName, Status: "→ " + toolName}
 		switch toolName {
 		case "bash":
+			activity.Status = "→ bash"
 			if cmd, ok := args["command"].(string); ok {
 				activity.Detail = truncateActivityText(cmd, 60)
-				activity.Status = fmt.Sprintf("running `%s`", truncateActivityText(cmd, 80))
+				activity.Status = "→ Run: " + truncateActivityText(cmd, 120)
 			}
 		case "edit":
+			activity.Status = "→ Edit"
 			if path, ok := args["path"].(string); ok {
 				activity.Detail = path
-				activity.Status = fmt.Sprintf("editing `%s`", path)
+				activity.Status = "→ Edit " + path
 			}
 		case "write":
+			activity.Status = "→ Write"
 			if path, ok := args["path"].(string); ok {
 				activity.Detail = path
-				activity.Status = fmt.Sprintf("writing `%s`", path)
+				activity.Status = "→ Write " + path
 			}
 		case "read":
+			activity.Status = "→ Read"
 			if path, ok := args["path"].(string); ok {
 				activity.Detail = path
-				activity.Status = fmt.Sprintf("reading `%s`", path)
+				activity.Status = "→ Read " + path
 			}
 		}
 		return activity
@@ -154,61 +152,13 @@ func actualTurnCount(turnCount *int) int {
 }
 
 func formatAssistantTextStatus(content string) string {
-	content = strings.Join(strings.Fields(strings.TrimSpace(content)), " ")
-	if content == "" {
-		return ""
-	}
-
-	for _, prefix := range []string{"Sure! ", "Sure, ", "Okay, ", "Okay! ", "Alright, ", "All right, "} {
-		content = strings.TrimPrefix(content, prefix)
-	}
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	content = strings.ReplaceAll(content, "\r", "\n")
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return ""
 	}
-
-	// Truncate long text to a useful snippet instead of dropping it entirely
-	if len(content) > 200 {
-		// Try to break at a sentence boundary
-		truncated := content[:200]
-		if idx := strings.LastIndexAny(truncated, ".!?"); idx > 100 {
-			return truncated[:idx+1]
-		}
-		// Otherwise break at a word boundary
-		if idx := strings.LastIndex(truncated, " "); idx > 100 {
-			return truncated[:idx] + "…"
-		}
-		return truncated + "…"
-	}
-	return content
-}
-
-func formatThinkingSummary(content string) string {
-	// Collapse whitespace and take first meaningful line as summary
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return ""
-	}
-	// Take the first non-empty line
-	lines := strings.SplitN(content, "\n", 10)
-	var firstLine string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			firstLine = line
-			break
-		}
-	}
-	if firstLine == "" {
-		return ""
-	}
-	if len(firstLine) > 150 {
-		if idx := strings.LastIndex(firstLine[:150], " "); idx > 80 {
-			return "_" + firstLine[:idx] + "…_"
-		}
-		return "_" + firstLine[:147] + "…_"
-	}
-	return "_" + firstLine + "_"
+	return truncateRunes(content, 3000)
 }
 
 func truncateActivityText(s string, maxLen int) string {
@@ -218,4 +168,15 @@ func truncateActivityText(s string, maxLen int) string {
 		return s[:maxLen-3] + "..."
 	}
 	return s
+}
+
+func truncateRunes(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	if maxLen <= 1 {
+		return string(runes[:maxLen])
+	}
+	return string(runes[:maxLen-1]) + "…"
 }

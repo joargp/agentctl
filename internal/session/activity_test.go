@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -12,8 +13,8 @@ func TestFormatEventStatusThinkingStart(t *testing.T) {
 	}
 
 	status := FormatEventStatus(event, new(int))
-	if status != "thinking" {
-		t.Fatalf("expected thinking status, got %q", status)
+	if status != "Thinking..." {
+		t.Fatalf("expected Thinking... status, got %q", status)
 	}
 }
 
@@ -42,49 +43,61 @@ func TestFormatEventStatusToolError(t *testing.T) {
 	}
 }
 
-func TestFormatEventStatusTextEndUsesVisibleAssistantText(t *testing.T) {
+func TestFormatEventStatusToolRead(t *testing.T) {
 	var event map[string]interface{}
-	if err := json.Unmarshal([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_end","content":"Sure! Let me write the script and run it in one go."}}`), &event); err != nil {
+	if err := json.Unmarshal([]byte(`{"type":"tool_execution_start","toolName":"read","args":{"path":"cmd/watch.go"}}`), &event); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
 
 	status := FormatEventStatus(event, new(int))
-	if status != "Let me write the script and run it in one go." {
-		t.Fatalf("expected visible assistant text status, got %q", status)
+	if status != "→ Read cmd/watch.go" {
+		t.Fatalf("expected read status, got %q", status)
 	}
 }
 
-func TestFormatEventStatusTextEndTruncatesLongAssistantText(t *testing.T) {
+func TestParseActivityEventTextEndUsesFinalAssistantTextAndReplace(t *testing.T) {
 	var event map[string]interface{}
-	if err := json.Unmarshal([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_end","content":"Everything worked perfectly. Here's a summary of what was done: first I wrote the file, then I ran the command, then I summarized the results in detail."}}`), &event); err != nil {
+	content := "Sure! Let me write the script and run it in one go."
+	if err := json.Unmarshal([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_end","content":"`+content+`"}}`), &event); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
 
-	status := FormatEventStatus(event, new(int))
-	// Text under 200 chars should now be included as-is
-	expected := "Everything worked perfectly. Here's a summary of what was done: first I wrote the file, then I ran the command, then I summarized the results in detail."
-	if status != expected {
-		t.Fatalf("expected full text (under 200 chars), got %q", status)
+	activity := ParseActivityEvent(event, new(int))
+	if activity.Status != content {
+		t.Fatalf("expected final assistant text status, got %q", activity.Status)
+	}
+	if !activity.Replace {
+		t.Fatal("expected text_end to set Replace")
 	}
 }
 
-func TestFormatEventStatusTextEndTruncatesVeryLongAssistantText(t *testing.T) {
-	// Text over 200 chars should be truncated at a sentence/word boundary
-	longText := "This is a comprehensive analysis of the problem at hand. The root cause appears to be a race condition in the authentication middleware that occurs when multiple requests arrive simultaneously. I've identified three potential fixes that we should evaluate carefully before proceeding."
+func TestFormatEventStatusTextEndPreservesFormattingAndTruncatesForSlack(t *testing.T) {
 	var event map[string]interface{}
-	payload := `{"type":"message_update","assistantMessageEvent":{"type":"text_end","content":"` + longText + `"}}`
-	if err := json.Unmarshal([]byte(payload), &event); err != nil {
+	longText := strings.Repeat("a", 3100)
+	if err := json.Unmarshal([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_end","content":"`+longText+`"}}`), &event); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
 	}
 
 	status := FormatEventStatus(event, new(int))
 	if status == "" {
-		t.Fatal("expected non-empty truncated status for very long text")
+		t.Fatal("expected non-empty status")
 	}
-	if len(status) > 210 {
-		t.Fatalf("expected truncated status under 210 chars, got %d chars: %q", len(status), status)
+	if len([]rune(status)) != 3000 {
+		t.Fatalf("expected status truncated to 3000 runes, got %d", len([]rune(status)))
 	}
-	if status == longText {
-		t.Fatal("expected text to be truncated, but got full text")
+	if !strings.HasSuffix(status, "…") {
+		t.Fatalf("expected ellipsis suffix, got %q", status[len(status)-5:])
+	}
+}
+
+func TestParseActivityEventThinkingEndIsSilent(t *testing.T) {
+	var event map[string]interface{}
+	if err := json.Unmarshal([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","content":"summary"}}`), &event); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	activity := ParseActivityEvent(event, new(int))
+	if activity.Status != "" {
+		t.Fatalf("expected empty status for thinking_end, got %q", activity.Status)
 	}
 }

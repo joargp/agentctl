@@ -82,7 +82,8 @@ func TestWriteProgressEvent(t *testing.T) {
 		ChannelID:  "C123",
 		ThreadTs:   "1710000000.000100",
 		SubagentID: "abc123",
-		Text:       "running `npm test`",
+		Text:       "All done",
+		Replace:    true,
 	})
 	if err != nil {
 		t.Fatalf("WriteProgressEvent returned error: %v", err)
@@ -110,6 +111,7 @@ func TestWriteProgressEvent(t *testing.T) {
 		ThreadTs   string `json:"threadTs"`
 		SubagentID string `json:"subagentId"`
 		Text       string `json:"text"`
+		Replace    bool   `json:"replace"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
@@ -121,8 +123,11 @@ func TestWriteProgressEvent(t *testing.T) {
 	if payload.SubagentID != "abc123" {
 		t.Fatalf("expected subagent id abc123, got %s", payload.SubagentID)
 	}
-	if payload.Text != "running `npm test`" {
+	if payload.Text != "All done" {
 		t.Fatalf("expected progress text to round-trip, got %q", payload.Text)
+	}
+	if !payload.Replace {
+		t.Fatal("expected replace flag to round-trip")
 	}
 }
 

@@ -28,6 +28,7 @@ type eventFile struct {
 	ThreadTs   string            `json:"threadTs,omitempty"`
 	SubagentID string            `json:"subagentId,omitempty"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
+	Replace    bool              `json:"replace,omitempty"`
 }
 
 // ImmediateEvent describes a file-based immediate event notification.
@@ -46,6 +47,7 @@ type ProgressEvent struct {
 	Text       string
 	Model      string // model used by the subagent (optional, included in first event)
 	Task       string // short task description (optional, included in first event)
+	Replace    bool   // replace the progress body with the provided text
 }
 
 // SendFollowUp delivers message to the pi session identified by sessionID as a
@@ -143,6 +145,7 @@ func WriteProgressEvent(dir string, event ProgressEvent) error {
 		ThreadTs:   event.ThreadTs,
 		SubagentID: event.SubagentID,
 		Text:       event.Text,
+		Replace:    event.Replace,
 	}
 	if event.Model != "" {
 		if payload.Metadata == nil {
