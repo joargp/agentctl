@@ -243,29 +243,77 @@ func completionMessage(s *session.Session) string {
 		s.Model, s.ID, task,
 	)
 
-	// Try to include last few lines of rendered output as a summary.
-	// Use readTail for performance on large log files.
-	// 512KB handles sessions with large events (thinking, tool results).
+	// Prefer a condensed summary (tool calls + final assistant text) over raw
+	// rendered output so completion notifications stay meaningful.
+	// Read from the tail first for performance, but fall back to the full file if
+	// the tail slice doesn't yield any useful summary lines.
 	data := readTail(s.LogFile, 512*1024)
-	if len(data) > 0 {
-		rendered := renderJSONLog(data)
-		lines := splitLines([]byte(rendered))
-		// Take last 20 non-empty lines as summary
-		var summary []string
-		for i := len(lines) - 1; i >= 0 && len(summary) < 20; i-- {
-			if lines[i] != "" {
-				summary = append([]string{lines[i]}, summary...)
-			}
+	summary := completionSummaryLines(data)
+	if len(summary) == 0 {
+		if fullData, err := os.ReadFile(s.LogFile); err == nil {
+			summary = completionSummaryLines(fullData)
 		}
-		if len(summary) > 0 {
-			msg += "\n**Output (last lines):**\n```\n"
-			for _, l := range summary {
-				msg += l + "\n"
-			}
-			msg += "```\n"
+	}
+	if len(summary) > 0 {
+		msg += "\n**Output (last lines):**\n```\n"
+		for _, l := range summary {
+			msg += l + "\n"
 		}
+		msg += "```\n"
 	}
 
 	msg += fmt.Sprintf("\nRun `agentctl dump %s` for the full output.", s.ID)
 	return msg
+}
+
+func completionSummaryLines(data []byte) []string {
+	if len(data) == 0 {
+		return nil
+	}
+
+	type candidate struct {
+		rendered         string
+		stripPromptLines bool
+	}
+
+	// Prefer the condensed summary renderer. Fall back to the full renderer if
+	// the summary view doesn't produce anything useful.
+	candidates := []candidate{
+		{rendered: renderJSONLogSummary(data)},
+		{rendered: renderJSONLog(data), stripPromptLines: true},
+	}
+
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate.rendered) == "" {
+			continue
+		}
+
+		lines := splitLines([]byte(candidate.rendered))
+		var filtered []string
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			if trimmed == "---" {
+				continue
+			}
+			if candidate.stripPromptLines && strings.HasPrefix(trimmed, "> ") {
+				continue
+			}
+			if strings.HasPrefix(trimmed, "[") && strings.Contains(trimmed, " tokens") {
+				continue
+			}
+			filtered = append(filtered, line)
+		}
+		if len(filtered) == 0 {
+			continue
+		}
+		if len(filtered) > 20 {
+			filtered = filtered[len(filtered)-20:]
+		}
+		return filtered
+	}
+
+	return nil
 }

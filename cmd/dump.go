@@ -489,8 +489,14 @@ func renderJSONLogSummary(data []byte) string {
 			case "text_start":
 				currentText.Reset()
 			case "text_end":
-				// Print the accumulated text block
+				// Prefer accumulated delta text, but fall back to the full content on
+				// text_end so summaries still work when reading from a tail slice that
+				// starts in the middle of a large text_delta event.
 				text := strings.TrimSpace(currentText.String())
+				if text == "" {
+					text, _ = ae["content"].(string)
+					text = strings.TrimSpace(text)
+				}
 				if text != "" {
 					out.WriteString(text + "\n")
 				}
@@ -504,6 +510,10 @@ func renderJSONLogSummary(data []byte) string {
 			currentText.Reset()
 		case "text_end":
 			text := strings.TrimSpace(currentText.String())
+			if text == "" {
+				text, _ = event["content"].(string)
+				text = strings.TrimSpace(text)
+			}
 			if text != "" {
 				out.WriteString(text + "\n")
 			}

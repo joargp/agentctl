@@ -115,6 +115,25 @@ No JSON here.
 	}
 }
 
+func TestRenderJSONLogSummaryFallsBackToTopLevelTextEndContent(t *testing.T) {
+	long := strings.Repeat("A", 200)
+	input := `{"type":"text_end","content":"` + long + `"}
+`
+	result := renderJSONLogSummary([]byte(input))
+	if !strings.Contains(result, long) {
+		t.Fatalf("expected text_end content in summary output, got %q", result)
+	}
+}
+
+func TestRenderJSONLogSummaryFallsBackToNestedTextEndContent(t *testing.T) {
+	input := `{"type":"message_update","assistantMessageEvent":{"type":"text_end","content":"Final answer"}}
+`
+	result := renderJSONLogSummary([]byte(input))
+	if !strings.Contains(result, "Final answer") {
+		t.Fatalf("expected nested text_end content in summary output, got %q", result)
+	}
+}
+
 func TestSplitLines(t *testing.T) {
 	lines := splitLines([]byte("foo\nbar\nbaz"))
 	if len(lines) != 3 {
