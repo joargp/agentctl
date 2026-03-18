@@ -271,6 +271,9 @@ func renderJSONLine(line string) string {
 		case "thinking_start":
 			return "💭 thinking..."
 		}
+	// Top-level thinking_start emitted by OpenAI models.
+	case "thinking_start":
+		return "💭 thinking..."
 	case "tool_execution_start":
 		toolName, _ := event["toolName"].(string)
 		args, _ := event["args"].(map[string]interface{})
@@ -358,6 +361,15 @@ func classifyEvent(line string) (delta string, deltaKind string, other string) {
 				return d, "text", ""
 			}
 		}
+	}
+	// Top-level delta events emitted by OpenAI models.
+	if eventType == "thinking_delta" {
+		d, _ := event["delta"].(string)
+		return d, "thinking", ""
+	}
+	if eventType == "text_delta" {
+		d, _ := event["delta"].(string)
+		return d, "text", ""
 	}
 	return "", "", renderJSONLine(line)
 }

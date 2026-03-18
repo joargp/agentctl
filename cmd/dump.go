@@ -370,6 +370,16 @@ func renderJSONLog(data []byte) string {
 			case "thinking_end":
 				// thinking done, text will follow
 			}
+		// Top-level event types emitted by OpenAI models (not nested in assistantMessageEvent).
+		case "text_delta":
+			delta, _ := event["delta"].(string)
+			out.WriteString(delta)
+		case "text_start":
+			out.WriteString("\n")
+		case "thinking_start":
+			out.WriteString("💭 thinking...\n")
+		case "thinking_end":
+			// thinking done, text will follow
 		case "tool_execution_start":
 			toolName, _ := event["toolName"].(string)
 			args, _ := event["args"].(map[string]interface{})
@@ -486,6 +496,18 @@ func renderJSONLogSummary(data []byte) string {
 				}
 				currentText.Reset()
 			}
+		// Top-level event types emitted by OpenAI models.
+		case "text_delta":
+			delta, _ := event["delta"].(string)
+			currentText.WriteString(delta)
+		case "text_start":
+			currentText.Reset()
+		case "text_end":
+			text := strings.TrimSpace(currentText.String())
+			if text != "" {
+				out.WriteString(text + "\n")
+			}
+			currentText.Reset()
 		case "tool_execution_start":
 			toolName, _ := event["toolName"].(string)
 			args, _ := event["args"].(map[string]interface{})

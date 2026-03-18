@@ -80,6 +80,19 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 			content, _ := ae["content"].(string)
 			return Activity{State: "writing", Status: formatAssistantTextStatus(content), Replace: true}
 		}
+	// Top-level event types emitted by OpenAI models (not nested in assistantMessageEvent).
+	case "thinking_start":
+		return Activity{State: "thinking", Status: "Thinking..."}
+	case "thinking_end":
+		return Activity{State: "writing"}
+	case "text_delta":
+		delta, _ := event["delta"].(string)
+		return Activity{State: "writing", Detail: truncateActivityText(delta, 60)}
+	case "text_start":
+		return Activity{State: "writing"}
+	case "text_end":
+		content, _ := event["content"].(string)
+		return Activity{State: "writing", Status: formatAssistantTextStatus(content), Replace: true}
 	case "tool_execution_start":
 		toolName, _ := event["toolName"].(string)
 		args, _ := event["args"].(map[string]interface{})
