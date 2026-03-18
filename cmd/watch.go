@@ -245,7 +245,8 @@ func completionMessage(s *session.Session) string {
 
 	// Try to include last few lines of rendered output as a summary.
 	// Use readTail for performance on large log files.
-	data := readTail(s.LogFile, 128*1024)
+	// 512KB handles sessions with large events (thinking, tool results).
+	data := readTail(s.LogFile, 512*1024)
 	if len(data) > 0 {
 		rendered := renderJSONLog(data)
 		lines := splitLines([]byte(rendered))

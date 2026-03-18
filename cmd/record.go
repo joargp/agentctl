@@ -38,11 +38,19 @@ func recordStream(in io.Reader, out io.Writer, log io.Writer) error {
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
+			// Always pass through to terminal output.
 			if _, writeErr := out.Write(line); writeErr != nil {
 				return writeErr
 			}
-			if _, writeErr := log.Write(session.SanitizeRecordingLine(line)); writeErr != nil {
-				return writeErr
+			// Only write valid JSON lines to the log file.
+			// Pi's stderr (merged via 2>&1) can contain terminal escape
+			// sequences (e.g., OSC notifications) that are not JSON and
+			// can be very large, polluting the NDJSON log.
+			sanitized := session.SanitizeRecordingLine(line)
+			if looksLikeJSON(sanitized) {
+				if _, writeErr := log.Write(sanitized); writeErr != nil {
+					return writeErr
+				}
 			}
 		}
 		if err != nil {
@@ -52,4 +60,21 @@ func recordStream(in io.Reader, out io.Writer, log io.Writer) error {
 			return err
 		}
 	}
+}
+
+// looksLikeJSON returns true if the line starts with '{' after trimming whitespace.
+// This is a fast pre-check to avoid writing non-JSON lines (e.g., terminal escape
+// sequences) to the NDJSON log file.
+func looksLikeJSON(line []byte) bool {
+	for _, b := range line {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '{':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
