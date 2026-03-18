@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -243,10 +245,9 @@ func completionMessage(s *session.Session) string {
 		s.Model, s.ID, task,
 	)
 
-	// Prefer a condensed summary (tool calls + final assistant text) over raw
-	// rendered output so completion notifications stay meaningful.
-	// Read from the tail first for performance, but fall back to the full file if
-	// the tail slice doesn't yield any useful summary lines.
+	// Prefer the assistant's final text for completion notifications instead of
+	// replaying tool calls. Read from the tail first for performance, but fall
+	// back to the full file if the tail slice doesn't yield any assistant text.
 	data := readTail(s.LogFile, 512*1024)
 	summary := completionSummaryLines(data)
 	if len(summary) == 0 {
@@ -255,7 +256,7 @@ func completionMessage(s *session.Session) string {
 		}
 	}
 	if len(summary) > 0 {
-		msg += "\n**Output (last lines):**\n```\n"
+		msg += "\n**Summary:**\n```\n"
 		for _, l := range summary {
 			msg += l + "\n"
 		}
@@ -271,49 +272,73 @@ func completionSummaryLines(data []byte) []string {
 		return nil
 	}
 
-	type candidate struct {
-		rendered         string
-		stripPromptLines bool
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+
+	var currentText strings.Builder
+	var summary []string
+
+	flushText := func(fallback string) {
+		text := currentText.String()
+		if strings.TrimSpace(text) == "" {
+			text = fallback
+		}
+		currentText.Reset()
+
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		for _, line := range splitLines([]byte(text)) {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			summary = append(summary, line)
+		}
 	}
 
-	// Prefer the condensed summary renderer. Fall back to the full renderer if
-	// the summary view doesn't produce anything useful.
-	candidates := []candidate{
-		{rendered: renderJSONLogSummary(data)},
-		{rendered: renderJSONLog(data), stripPromptLines: true},
-	}
-
-	for _, candidate := range candidates {
-		if strings.TrimSpace(candidate.rendered) == "" {
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
 			continue
 		}
 
-		lines := splitLines([]byte(candidate.rendered))
-		var filtered []string
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" {
-				continue
-			}
-			if trimmed == "---" {
-				continue
-			}
-			if candidate.stripPromptLines && strings.HasPrefix(trimmed, "> ") {
-				continue
-			}
-			if strings.HasPrefix(trimmed, "[") && strings.Contains(trimmed, " tokens") {
-				continue
-			}
-			filtered = append(filtered, line)
-		}
-		if len(filtered) == 0 {
+		var event map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
 		}
-		if len(filtered) > 20 {
-			filtered = filtered[len(filtered)-20:]
+
+		eventType, _ := event["type"].(string)
+		switch eventType {
+		case "message_update":
+			ae, _ := event["assistantMessageEvent"].(map[string]interface{})
+			if ae == nil {
+				continue
+			}
+			aeType, _ := ae["type"].(string)
+			switch aeType {
+			case "text_start":
+				currentText.Reset()
+			case "text_delta":
+				delta, _ := ae["delta"].(string)
+				currentText.WriteString(delta)
+			case "text_end":
+				content, _ := ae["content"].(string)
+				flushText(content)
+			}
+		case "text_start":
+			currentText.Reset()
+		case "text_delta":
+			delta, _ := event["delta"].(string)
+			currentText.WriteString(delta)
+		case "text_end":
+			content, _ := event["content"].(string)
+			flushText(content)
 		}
-		return filtered
 	}
 
-	return nil
+	if len(summary) > 20 {
+		summary = summary[len(summary)-20:]
+	}
+	return summary
 }

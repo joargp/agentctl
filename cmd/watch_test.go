@@ -10,7 +10,7 @@ import (
 	"github.com/joargp/agentctl/internal/session"
 )
 
-func TestCompletionSummaryLinesUsesCondensedSummary(t *testing.T) {
+func TestCompletionSummaryLinesUsesAssistantTextOnly(t *testing.T) {
 	data := []byte(strings.Join([]string{
 		`{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"Say hello"}]}}`,
 		`{"type":"tool_execution_start","toolName":"read","args":{"path":"cmd/watch.go"}}`,
@@ -22,11 +22,7 @@ func TestCompletionSummaryLinesUsesCondensedSummary(t *testing.T) {
 	}, "\n"))
 
 	got := completionSummaryLines(data)
-	want := []string{
-		"🔧 read: cmd/watch.go",
-		"→ package cmd",
-		"Hello there.",
-	}
+	want := []string{"Hello there."}
 	if len(got) != len(want) {
 		t.Fatalf("expected %d lines, got %d: %#v", len(want), len(got), got)
 	}
@@ -72,8 +68,8 @@ func TestCompletionMessageFallsBackToFullLogWhenTailMissesDelta(t *testing.T) {
 	}
 
 	msg := completionMessage(s)
-	if !strings.Contains(msg, "**Output (last lines):**") {
-		t.Fatalf("expected completion message to include output block, got: %q", msg)
+	if !strings.Contains(msg, "**Summary:**") {
+		t.Fatalf("expected completion message to include summary block, got: %q", msg)
 	}
 	if !strings.Contains(msg, strings.Repeat("A", 64)) {
 		t.Fatalf("expected completion message to include assistant text from full-log fallback")
