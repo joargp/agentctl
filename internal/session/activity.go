@@ -69,6 +69,13 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 		case "thinking_start":
 			return Activity{State: "thinking", Status: "thinking"}
 		case "thinking_end":
+			// If thinking_end includes content, extract a summary
+			if content, ok := ae["content"].(string); ok && content != "" {
+				summary := formatThinkingSummary(content)
+				if summary != "" {
+					return Activity{State: "writing", Status: summary}
+				}
+			}
 			return Activity{State: "writing"}
 		case "text_delta":
 			delta, _ := ae["delta"].(string)
@@ -151,9 +158,6 @@ func formatAssistantTextStatus(content string) string {
 	if content == "" {
 		return ""
 	}
-	if len(content) > 120 {
-		return ""
-	}
 
 	for _, prefix := range []string{"Sure! ", "Sure, ", "Okay, ", "Okay! ", "Alright, ", "All right, "} {
 		content = strings.TrimPrefix(content, prefix)
@@ -162,7 +166,49 @@ func formatAssistantTextStatus(content string) string {
 	if content == "" {
 		return ""
 	}
+
+	// Truncate long text to a useful snippet instead of dropping it entirely
+	if len(content) > 200 {
+		// Try to break at a sentence boundary
+		truncated := content[:200]
+		if idx := strings.LastIndexAny(truncated, ".!?"); idx > 100 {
+			return truncated[:idx+1]
+		}
+		// Otherwise break at a word boundary
+		if idx := strings.LastIndex(truncated, " "); idx > 100 {
+			return truncated[:idx] + "…"
+		}
+		return truncated + "…"
+	}
 	return content
+}
+
+func formatThinkingSummary(content string) string {
+	// Collapse whitespace and take first meaningful line as summary
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	// Take the first non-empty line
+	lines := strings.SplitN(content, "\n", 10)
+	var firstLine string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			firstLine = line
+			break
+		}
+	}
+	if firstLine == "" {
+		return ""
+	}
+	if len(firstLine) > 150 {
+		if idx := strings.LastIndex(firstLine[:150], " "); idx > 80 {
+			return "_" + firstLine[:idx] + "…_"
+		}
+		return "_" + firstLine[:147] + "…_"
+	}
+	return "_" + firstLine + "_"
 }
 
 func truncateActivityText(s string, maxLen int) string {

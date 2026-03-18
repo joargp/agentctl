@@ -44,6 +44,8 @@ type ProgressEvent struct {
 	ThreadTs   string
 	SubagentID string
 	Text       string
+	Model      string // model used by the subagent (optional, included in first event)
+	Task       string // short task description (optional, included in first event)
 }
 
 // SendFollowUp delivers message to the pi session identified by sessionID as a
@@ -141,6 +143,18 @@ func WriteProgressEvent(dir string, event ProgressEvent) error {
 		ThreadTs:   event.ThreadTs,
 		SubagentID: event.SubagentID,
 		Text:       event.Text,
+	}
+	if event.Model != "" {
+		if payload.Metadata == nil {
+			payload.Metadata = make(map[string]string)
+		}
+		payload.Metadata["model"] = event.Model
+	}
+	if event.Task != "" {
+		if payload.Metadata == nil {
+			payload.Metadata = make(map[string]string)
+		}
+		payload.Metadata["task"] = event.Task
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

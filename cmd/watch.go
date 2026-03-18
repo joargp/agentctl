@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/joargp/agentctl/internal/notify"
@@ -201,13 +202,33 @@ func emitProgressLine(line *tail.Line, s *session.Session, opts watcherNotifyOpt
 		return
 	}
 
+	isFirst := *lastStatus == ""
 	*lastStatus = activity.Status
-	_ = notify.WriteProgressEvent(opts.EventDir, notify.ProgressEvent{
+	event := notify.ProgressEvent{
 		ChannelID:  opts.EventChannel,
 		ThreadTs:   opts.EventThread,
 		SubagentID: s.ID,
 		Text:       activity.Status,
-	})
+	}
+	// Include model and task in the first progress event so
+	// the Munin runtime can display them in the progress header.
+	if isFirst {
+		event.Model = s.Model
+		event.Task = truncateTask(s.Task, 100)
+	}
+	_ = notify.WriteProgressEvent(opts.EventDir, event)
+}
+
+func truncateTask(task string, maxLen int) string {
+	task = strings.TrimSpace(task)
+	// Take only the first line for display purposes
+	if idx := strings.IndexAny(task, "\n\r"); idx >= 0 {
+		task = task[:idx]
+	}
+	if len(task) > maxLen {
+		return task[:maxLen-3] + "..."
+	}
+	return task
 }
 
 func completionMessage(s *session.Session) string {
