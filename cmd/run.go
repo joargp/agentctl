@@ -198,12 +198,16 @@ func runRun(_ *cobra.Command, _ []string) error {
 }
 
 func buildRunScript(cwd, taskFile, model, logFile, self string) string {
+	// stderr goes to a separate file so it doesn't pollute the NDJSON log.
+	// Pi emits terminal escape sequences (OSC notifications) on stderr
+	// that can be very large and break log parsing.
+	stderrFile := logFile + ".stderr"
 	return fmt.Sprintf(`#!/bin/sh
 set -e
 cd %s
 task=$(cat %s)
-exec pi --mode json --model %s --no-session -p "$task" 2>&1 | %s record %s
-`, shellQuote(cwd), shellQuote(taskFile), shellQuote(model), shellQuote(self), shellQuote(logFile))
+exec pi --mode json --model %s --no-session -p "$task" 2>%s | %s record %s
+`, shellQuote(cwd), shellQuote(taskFile), shellQuote(model), shellQuote(stderrFile), shellQuote(self), shellQuote(logFile))
 }
 
 func resolveWatcherNotifyOptions(notifyMunin bool, getenv func(string) string) (watcherNotifyOptions, error) {

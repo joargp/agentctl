@@ -156,10 +156,10 @@ agentctl kill --all         # kill all sessions
 Each `agentctl run` creates a tmux session that runs:
 
 ```sh
-pi --mode json --model <model> --no-session -p "<task>" 2>&1 | agentctl record <logfile>
+pi --mode json --model <model> --no-session -p "<task>" 2><logfile>.stderr | agentctl record <logfile>
 ```
 
-Pi runs in JSON mode, producing streaming NDJSON events (text deltas, tool calls, tool results). `agentctl record` mirrors the raw stream to the terminal while stripping large `partial`/`message` payloads from `thinking_delta` and `text_delta` events before persisting them to the log file. This keeps recordings linear in size and still enables real-time progress monitoring via `dump` and `monitor`.
+Pi runs in JSON mode, producing streaming NDJSON events (text deltas, tool calls, tool results) on stdout. Stderr is redirected to a separate `.stderr` file to keep the NDJSON log clean (pi emits terminal escape sequences on stderr that can be very large). `agentctl record` mirrors the raw JSON stream to the terminal while stripping large `partial`/`message` payloads from `thinking_delta` and `text_delta` events before persisting them to the log file. Non-JSON lines are filtered out. This keeps recordings linear in size and still enables real-time progress monitoring via `dump` and `monitor`.
 
 When pi exits the tmux session is destroyed automatically, flipping the session status to `done`.
 

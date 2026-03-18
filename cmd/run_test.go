@@ -202,6 +202,12 @@ func TestBuildRunScriptUsesRecorder(t *testing.T) {
 	if !strings.Contains(script, "'/usr/local/bin/agentctl' record '/tmp/run.log'") {
 		t.Fatalf("expected run script to invoke recorder, got %q", script)
 	}
+	if !strings.Contains(script, "2>'/tmp/run.log.stderr'") {
+		t.Fatalf("expected stderr redirect to separate file, got %q", script)
+	}
+	if strings.Contains(script, "2>&1") {
+		t.Fatalf("expected no stderr-to-stdout merge, got %q", script)
+	}
 }
 
 func TestResolveRunTaskWithInlineTask(t *testing.T) {

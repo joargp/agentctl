@@ -56,7 +56,7 @@ func killOne(id string) error {
 	// Remove script/task files. Log is preserved unless --clean is set.
 	filesToRemove := []string{s.ScriptFile, s.TaskFile}
 	if killClean {
-		filesToRemove = append(filesToRemove, s.LogFile)
+		filesToRemove = append(filesToRemove, s.LogFile, s.LogFile+".stderr")
 	}
 	for _, f := range filesToRemove {
 		if f != "" {
