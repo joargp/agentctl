@@ -258,6 +258,14 @@ func renderJSONLineForDump(line string) string {
 		case "thinking_start":
 			return "💭 thinking...\n"
 		}
+	// Top-level text/thinking events emitted by OpenAI models.
+	case "text_delta":
+		delta, _ := event["delta"].(string)
+		return delta
+	case "text_start":
+		return "\n"
+	case "thinking_start":
+		return "💭 thinking...\n"
 	case "tool_execution_start":
 		toolName, _ := event["toolName"].(string)
 		args, _ := event["args"].(map[string]interface{})

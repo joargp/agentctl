@@ -134,6 +134,22 @@ func TestRenderJSONLogSummaryFallsBackToNestedTextEndContent(t *testing.T) {
 	}
 }
 
+func TestRenderJSONLineForDumpHandlesTopLevelTextDelta(t *testing.T) {
+	input := `{"type":"text_delta","contentIndex":0,"delta":"Hello world"}`
+	result := renderJSONLineForDump(input)
+	if result != "Hello world" {
+		t.Fatalf("expected top-level text delta to render, got %q", result)
+	}
+}
+
+func TestRenderJSONLineForDumpHandlesTopLevelThinkingStart(t *testing.T) {
+	input := `{"type":"thinking_start","contentIndex":0}`
+	result := renderJSONLineForDump(input)
+	if result != "💭 thinking...\n" {
+		t.Fatalf("expected top-level thinking_start to render, got %q", result)
+	}
+}
+
 func TestSplitLines(t *testing.T) {
 	lines := splitLines([]byte("foo\nbar\nbaz"))
 	if len(lines) != 3 {
