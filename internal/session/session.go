@@ -20,6 +20,8 @@ type Session struct {
 	ScriptFile  string    `json:"script_file"`
 	TaskFile    string    `json:"task_file"`
 	StartedAt   time.Time `json:"started_at"`
+	Turns       int       `json:"turns,omitempty"`
+	TotalCost   float64   `json:"total_cost,omitempty"`
 }
 
 // Label returns the display name for monitor output.

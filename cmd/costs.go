@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/joargp/agentctl/internal/session"
+	"github.com/joargp/agentctl/internal/tmux"
 	"github.com/spf13/cobra"
 )
 
@@ -59,17 +60,18 @@ func runCosts(_ *cobra.Command, _ []string) error {
 		if sinceFilter > 0 && time.Since(s.StartedAt) > sinceFilter {
 			continue
 		}
-		cost := extractTotalCost(s.LogFile)
-		totalCost += cost
+		running := tmux.SessionExists(s.TmuxSession)
+		stats := getSessionLogStats(s, running)
+		totalCost += stats.TotalCost
 		age := time.Since(s.StartedAt).Round(time.Second)
 		count++
 
-		modelCosts[s.Model] += cost
+		modelCosts[s.Model] += stats.TotalCost
 		modelCounts[s.Model]++
 
 		costStr := ""
-		if cost > 0 {
-			costStr = fmt.Sprintf("$%.4f", cost)
+		if stats.TotalCost > 0 {
+			costStr = fmt.Sprintf("$%.4f", stats.TotalCost)
 		}
 		label := s.Label()
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, label, s.Model, age, costStr)

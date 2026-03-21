@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -138,15 +136,14 @@ func runLs(_ *cobra.Command, _ []string) error {
 		if len(taskRunes) > 50 {
 			task = string(taskRunes[:47]) + "..."
 		}
-		cost := extractTotalCost(s.LogFile)
+		stats := getSessionLogStats(s, running)
 		costStr := ""
-		if cost > 0 {
-			costStr = fmt.Sprintf("$%.4f", cost)
+		if stats.TotalCost > 0 {
+			costStr = fmt.Sprintf("$%.4f", stats.TotalCost)
 		}
-		turns := countTurns(s.LogFile)
 		turnsStr := ""
-		if turns > 0 {
-			turnsStr = strconv.Itoa(turns)
+		if stats.Turns > 0 {
+			turnsStr = strconv.Itoa(stats.Turns)
 		}
 		if hasNames {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Name, s.Model, status, age, turnsStr, costStr, task)
@@ -209,69 +206,4 @@ func readTail(path string, n int64) []byte {
 		return nil
 	}
 	return buf
-}
-
-// countTurns counts the number of turn_end events in a log file.
-// Uses line-by-line scanning to avoid loading huge logs into memory.
-func countTurns(logFile string) int {
-	f, err := os.Open(logFile)
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
-
-	count := 0
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
-	for scanner.Scan() {
-		if strings.Contains(scanner.Text(), `"turn_end"`) {
-			count++
-		}
-	}
-	return count
-}
-
-// extractTotalCost scans the JSON log for turn_end events and sums up costs.
-// Uses line-by-line scanning to avoid loading huge logs into memory.
-func extractTotalCost(logFile string) float64 {
-	f, err := os.Open(logFile)
-	if err != nil {
-		return 0
-	}
-	defer f.Close()
-
-	var totalCost float64
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
-
-	for scanner.Scan() {
-		line := scanner.Text()
-		// Quick filter: only parse lines that might have cost data
-		if !strings.Contains(line, `"turn_end"`) {
-			continue
-		}
-		var event map[string]interface{}
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
-			continue
-		}
-		if eventType, _ := event["type"].(string); eventType == "turn_end" {
-			msg, _ := event["message"].(map[string]interface{})
-			if msg == nil {
-				continue
-			}
-			usage, _ := msg["usage"].(map[string]interface{})
-			if usage == nil {
-				continue
-			}
-			costInfo, _ := usage["cost"].(map[string]interface{})
-			if costInfo == nil {
-				continue
-			}
-			if cost, ok := costInfo["total"].(float64); ok {
-				totalCost += cost
-			}
-		}
-	}
-
-	return totalCost
 }

@@ -191,6 +191,10 @@ func runRun(_ *cobra.Command, _ []string) error {
 		for tmux.SessionExists(tmuxSession) {
 			time.Sleep(500 * time.Millisecond)
 		}
+		// Cache turns+cost into session JSON so ls/status/costs don't rescan.
+		if err := cacheSessionLogStats(sess); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: cache session stats: %v\n", err)
+		}
 		fmt.Fprintln(os.Stderr, "done.")
 	}
 

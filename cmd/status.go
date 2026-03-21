@@ -86,16 +86,15 @@ func printSessionStatus(s *session.Session) {
 	// Show extra info for finished sessions.
 	extra := ""
 	if !running {
-		cost := extractTotalCost(s.LogFile)
+		stats := getSessionLogStats(s, running)
 		// Show turn count only if state doesn't already include it.
 		if !strings.Contains(state, "turn") {
-			turns := countTurns(s.LogFile)
-			if turns > 0 {
-				extra += fmt.Sprintf("  %d turns", turns)
+			if stats.Turns > 0 {
+				extra += fmt.Sprintf("  %d turns", stats.Turns)
 			}
 		}
-		if cost > 0 {
-			extra += fmt.Sprintf("  $%.4f", cost)
+		if stats.TotalCost > 0 {
+			extra += fmt.Sprintf("  $%.4f", stats.TotalCost)
 		}
 	}
 

@@ -81,6 +81,9 @@ func runWatch(_ *cobra.Command, args []string) error {
 	}
 
 	var errs []error
+	if err := cacheSessionLogStats(s); err != nil {
+		errs = append(errs, fmt.Errorf("cache session stats failed: %w", err))
+	}
 	message := completionMessage(s)
 
 	if notifyOptions.PiSessionID != "" {
