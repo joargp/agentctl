@@ -61,7 +61,16 @@ func Save(s *Session) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "sessions", s.ID+".json"), data, 0o644)
+	final := filepath.Join(dir, "sessions", s.ID+".json")
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func Load(id string) (*Session, error) {

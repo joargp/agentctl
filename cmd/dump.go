@@ -198,8 +198,12 @@ func runDumpFollow(s *session.Session) error {
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-		<-sig
-		closeDone()
+		defer signal.Stop(sig)
+		select {
+		case <-sig:
+			closeDone()
+		case <-done:
+		}
 	}()
 
 	// Also stop when session ends.

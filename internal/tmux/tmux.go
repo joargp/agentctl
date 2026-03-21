@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // SocketPath is the tmux socket used for all agentctl sessions.
@@ -55,16 +56,7 @@ func NewSession(name string, command ...string) error {
 
 // shellQuote wraps s in single quotes, escaping any embedded single quotes.
 func shellQuote(s string) string {
-	// Replace ' with '\'' — end quote, literal quote, re-open quote.
-	result := "'"
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\'' {
-			result += `'\''`
-		} else {
-			result += string(s[i])
-		}
-	}
-	return result + "'"
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // PipePaneToFile streams pane output to a log file, stripping ANSI escape codes.

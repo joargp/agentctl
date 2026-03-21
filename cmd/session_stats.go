@@ -31,8 +31,6 @@ func scanLogStats(logFile string) logStats {
 			continue
 		}
 
-		stats.Turns++
-
 		var event map[string]interface{}
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
@@ -40,6 +38,7 @@ func scanLogStats(logFile string) logStats {
 		if eventType, _ := event["type"].(string); eventType != "turn_end" {
 			continue
 		}
+		stats.Turns++
 		msg, _ := event["message"].(map[string]interface{})
 		if msg == nil {
 			continue

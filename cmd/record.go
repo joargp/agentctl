@@ -52,7 +52,7 @@ func recordStream(in io.Reader, out io.Writer, log io.Writer) error {
 		line := session.MarshalBatchedDelta(batch.event, batch.delta)
 		batch = nil
 		if line == nil {
-			return nil
+			return fmt.Errorf("marshal batched delta: internal error")
 		}
 		_, writeErr := log.Write(line)
 		return writeErr

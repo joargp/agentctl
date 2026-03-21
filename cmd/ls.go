@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strconv"
@@ -195,7 +196,10 @@ func readTail(path string, n int64) []byte {
 
 	size := info.Size()
 	if size <= n {
-		data, _ := os.ReadFile(path)
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return nil
+		}
+		data, _ := io.ReadAll(f)
 		return data
 	}
 

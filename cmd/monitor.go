@@ -179,6 +179,15 @@ func runMonitor(_ *cobra.Command, args []string) error {
 					}
 				case <-flushTimer.C:
 					flush()
+				case <-done:
+					if !flushTimer.Stop() {
+						select {
+						case <-flushTimer.C:
+						default:
+						}
+					}
+					flush()
+					return
 				}
 			}
 		}(s, label)
@@ -196,8 +205,12 @@ func runMonitor(_ *cobra.Command, args []string) error {
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-		<-sig
-		closeDone()
+		defer signal.Stop(sig)
+		select {
+		case <-sig:
+			closeDone()
+		case <-done:
+		}
 	}()
 
 	// Auto-stop when all monitored sessions finish
