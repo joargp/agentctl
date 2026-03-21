@@ -33,27 +33,75 @@ func runRecord(_ *cobra.Command, args []string) error {
 	return recordStream(os.Stdin, os.Stdout, f)
 }
 
+// deltaBatch buffers consecutive delta events with the same key and merges
+// their delta strings into a single event when flushed.
+type deltaBatch struct {
+	key   session.DeltaKey
+	delta string // concatenated delta text
+	event map[string]interface{}
+}
+
 func recordStream(in io.Reader, out io.Writer, log io.Writer) error {
 	reader := bufio.NewReader(in)
+	var batch *deltaBatch
+
+	flushBatch := func() error {
+		if batch == nil {
+			return nil
+		}
+		line := session.MarshalBatchedDelta(batch.event, batch.delta)
+		batch = nil
+		if line == nil {
+			return nil
+		}
+		_, writeErr := log.Write(line)
+		return writeErr
+	}
+
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			// Always pass through to terminal output.
+			// Always pass through to terminal output (unmodified).
 			if _, writeErr := out.Write(line); writeErr != nil {
 				return writeErr
 			}
-			// Only write valid JSON lines to the log file.
-			// Pi's stderr (merged via 2>&1) can contain terminal escape
-			// sequences (e.g., OSC notifications) that are not JSON and
-			// can be very large, polluting the NDJSON log.
+
+			if !looksLikeJSON(line) {
+				continue
+			}
+
 			sanitized := session.SanitizeRecordingLine(line)
-			if looksLikeJSON(sanitized) {
+			if !looksLikeJSON(sanitized) {
+				continue
+			}
+
+			// Try to batch consecutive delta events.
+			if key, delta, evt, ok := session.ParseBatchableDelta(sanitized); ok {
+				if batch != nil && batch.key == key {
+					// Extend current batch.
+					batch.delta += delta
+				} else {
+					// Flush any previous batch, start a new one.
+					if writeErr := flushBatch(); writeErr != nil {
+						return writeErr
+					}
+					batch = &deltaBatch{key: key, delta: delta, event: evt}
+				}
+			} else {
+				// Non-delta event: flush batch, write event directly.
+				if writeErr := flushBatch(); writeErr != nil {
+					return writeErr
+				}
 				if _, writeErr := log.Write(sanitized); writeErr != nil {
 					return writeErr
 				}
 			}
 		}
 		if err != nil {
+			// Flush remaining batch on EOF.
+			if flushErr := flushBatch(); flushErr != nil {
+				return flushErr
+			}
 			if err == io.EOF {
 				return nil
 			}
@@ -63,8 +111,6 @@ func recordStream(in io.Reader, out io.Writer, log io.Writer) error {
 }
 
 // looksLikeJSON returns true if the line starts with '{' after trimming whitespace.
-// This is a fast pre-check to avoid writing non-JSON lines (e.g., terminal escape
-// sequences) to the NDJSON log file.
 func looksLikeJSON(line []byte) bool {
 	for _, b := range line {
 		switch b {
