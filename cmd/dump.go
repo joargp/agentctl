@@ -26,18 +26,25 @@ Extracts assistant text, tool calls, and tool results from the NDJSON event stre
 
 Examples:
   agentctl dump abc123
+  agentctl dump abc123 --summary
+  agentctl dump abc123 --summary --last
+  agentctl dump abc123 --summary --turns 3
   agentctl dump abc123 --lines 200
   agentctl dump abc123 --json
-  agentctl dump abc123 --follow`,
+  agentctl dump abc123 --follow
+  agentctl dump abc123 --no-header`,
 	Args: cobra.ExactArgs(1),
 	RunE: runDump,
 }
 
 var (
-	dumpLines   int
-	dumpJSON    bool
-	dumpFollow  bool
-	dumpSummary bool
+	dumpLines    int
+	dumpJSON     bool
+	dumpFollow   bool
+	dumpSummary  bool
+	dumpNoHeader bool
+	dumpTurns    int
+	dumpLast     bool
 )
 
 func init() {
@@ -45,7 +52,37 @@ func init() {
 	dumpCmd.Flags().BoolVar(&dumpJSON, "json", false, "output raw JSON events")
 	dumpCmd.Flags().BoolVarP(&dumpFollow, "follow", "f", false, "follow output like tail -f (rendered or raw JSON)")
 	dumpCmd.Flags().BoolVar(&dumpSummary, "summary", false, "condensed output (tool calls + final text only, no intermediate deltas)")
+	dumpCmd.Flags().BoolVar(&dumpNoHeader, "no-header", false, "skip the session metadata header")
+	dumpCmd.Flags().IntVarP(&dumpTurns, "turns", "t", 0, "show only the last N turns (0 = all)")
+	dumpCmd.Flags().BoolVar(&dumpLast, "last", false, "show only the last turn (shortcut for --turns 1)")
 	rootCmd.AddCommand(dumpCmd)
+}
+
+// printSessionHeader prints a brief session metadata header.
+func printSessionHeader(s *session.Session) {
+	if dumpNoHeader {
+		return
+	}
+	running := tmux.SessionExists(s.TmuxSession)
+	statusLabel := "done"
+	if running {
+		statusLabel = "running"
+	}
+	age := time.Since(s.StartedAt).Round(time.Second)
+	cost := extractTotalCost(s.LogFile)
+	costStr := ""
+	if cost > 0 {
+		costStr = fmt.Sprintf("  cost=$%.4f", cost)
+	}
+	// Replace newlines in task for single-line display.
+	task := strings.ReplaceAll(s.Task, "\n", " ")
+	task = strings.TrimSpace(task)
+	runes := []rune(task)
+	if len(runes) > 80 {
+		task = string(runes[:77]) + "..."
+	}
+	fmt.Printf("═══ %s  %s  %s  %s%s\n", s.ID, s.Label(), statusLabel, age, costStr)
+	fmt.Printf("    %s\n\n", task)
 }
 
 func runDump(_ *cobra.Command, args []string) error {
@@ -79,6 +116,17 @@ func runDump(_ *cobra.Command, args []string) error {
 		}
 		return nil
 	}
+
+	// Filter to last N turns if requested.
+	if dumpLast {
+		dumpTurns = 1
+	}
+	if dumpTurns > 0 {
+		data = filterLastNTurns(data, dumpTurns)
+	}
+
+	// Print session header for non-JSON modes.
+	printSessionHeader(s)
 
 	if dumpSummary {
 		text := renderJSONLogSummary(data)
@@ -269,41 +317,18 @@ func renderJSONLineForDump(line string) string {
 	case "tool_execution_start":
 		toolName, _ := event["toolName"].(string)
 		args, _ := event["args"].(map[string]interface{})
-		msg := fmt.Sprintf("\n🔧 %s", toolName)
-		if toolName == "bash" {
-			if cmd, ok := args["command"].(string); ok {
-				if len(cmd) > 120 {
-					cmd = cmd[:117] + "..."
-				}
-				msg += ": " + cmd
-			}
-		} else if toolName == "read" || toolName == "write" || toolName == "edit" {
-			if p, ok := args["path"].(string); ok {
-				msg += ": " + p
-			}
-		}
-		return msg + "\n"
+		return "\n" + formatToolCall(toolName, args, 120) + "\n"
 	case "tool_execution_end":
 		isError, _ := event["isError"].(bool)
+		result, _ := event["result"].(map[string]interface{})
 		if isError {
+			errText := formatToolResult(result, 200)
+			if errText != "" {
+				return "❌ " + errText
+			}
 			return "❌ error\n"
 		}
-		result, _ := event["result"].(map[string]interface{})
-		if result != nil {
-			content, _ := result["content"].([]interface{})
-			for _, c := range content {
-				cm, _ := c.(map[string]interface{})
-				if t, _ := cm["type"].(string); t == "text" {
-					text, _ := cm["text"].(string)
-					if text != "" {
-						if len(text) > 200 {
-							text = text[:197] + "..."
-						}
-						return fmt.Sprintf("→ %s\n", text)
-					}
-				}
-			}
-		}
+		return formatToolResult(result, 200)
 	case "turn_end":
 		// Extract token/cost info
 		msg, _ := event["message"].(map[string]interface{})
@@ -391,48 +416,23 @@ func renderJSONLog(data []byte) string {
 		case "tool_execution_start":
 			toolName, _ := event["toolName"].(string)
 			args, _ := event["args"].(map[string]interface{})
-			out.WriteString(fmt.Sprintf("\n🔧 %s", toolName))
-			// Show brief args for common tools
-			if toolName == "bash" {
-				if cmd, ok := args["command"].(string); ok {
-					if len(cmd) > 120 {
-						cmd = cmd[:117] + "..."
-					}
-					out.WriteString(fmt.Sprintf(": %s", cmd))
-				}
-			} else if toolName == "read" || toolName == "write" || toolName == "edit" {
-				if p, ok := args["path"].(string); ok {
-					out.WriteString(fmt.Sprintf(": %s", p))
-				}
-			}
-			out.WriteString("\n")
+			out.WriteString("\n" + formatToolCall(toolName, args, 120) + "\n")
 		case "tool_execution_update":
 			// Streaming partial results from long-running tools (e.g., bash output).
 			// We skip these in dump since tool_execution_end has the final result.
 			// Monitor handles these for live streaming.
 		case "tool_execution_end":
-			toolName, _ := event["toolName"].(string)
-			result, _ := event["result"].(map[string]interface{})
 			isError, _ := event["isError"].(bool)
+			result, _ := event["result"].(map[string]interface{})
 			if isError {
-				out.WriteString("❌ error")
-			}
-			// Show brief result for tool outputs
-			if result != nil {
-				content, _ := result["content"].([]interface{})
-				for _, c := range content {
-					cm, _ := c.(map[string]interface{})
-					if t, _ := cm["type"].(string); t == "text" {
-						text, _ := cm["text"].(string)
-						if text != "" {
-							if len(text) > 200 {
-								text = text[:197] + "..."
-							}
-							_ = toolName // suppress unused warning
-							out.WriteString(fmt.Sprintf("→ %s\n", text))
-						}
-					}
+				errText := formatToolResult(result, 200)
+				if errText != "" {
+					out.WriteString("❌ " + errText)
+				} else {
+					out.WriteString("❌ error\n")
 				}
+			} else {
+				out.WriteString(formatToolResult(result, 200))
 			}
 		case "turn_end":
 			// Extract token/cost info from turn_end message
@@ -460,8 +460,8 @@ func renderJSONLog(data []byte) string {
 	return out.String()
 }
 
-// renderJSONLogSummary produces a condensed view: tool calls + final text per turn.
-// Skips intermediate text_delta events and thinking.
+// renderJSONLogSummary produces a condensed view: user messages, tool calls,
+// final text per turn, and turn separators with token/cost info.
 func renderJSONLogSummary(data []byte) string {
 	var out strings.Builder
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
@@ -483,6 +483,26 @@ func renderJSONLogSummary(data []byte) string {
 
 		eventType, _ := event["type"].(string)
 		switch eventType {
+		case "message_start":
+			msg, _ := event["message"].(map[string]interface{})
+			role, _ := msg["role"].(string)
+			if role == "user" {
+				content, _ := msg["content"].([]interface{})
+				for _, c := range content {
+					cm, _ := c.(map[string]interface{})
+					if t, _ := cm["type"].(string); t == "text" {
+						text, _ := cm["text"].(string)
+						if text != "" {
+							// Truncate long user messages in summary (rune-safe)
+							r := []rune(text)
+							if len(r) > 200 {
+								text = string(r[:197]) + "..."
+							}
+							out.WriteString(fmt.Sprintf("> %s\n\n", text))
+						}
+					}
+				}
+			}
 		case "message_update":
 			ae, _ := event["assistantMessageEvent"].(map[string]interface{})
 			if ae == nil {
@@ -529,49 +549,160 @@ func renderJSONLogSummary(data []byte) string {
 		case "tool_execution_start":
 			toolName, _ := event["toolName"].(string)
 			args, _ := event["args"].(map[string]interface{})
-			out.WriteString(fmt.Sprintf("🔧 %s", toolName))
-			if toolName == "bash" {
-				if cmd, ok := args["command"].(string); ok {
-					if len(cmd) > 120 {
-						cmd = cmd[:117] + "..."
-					}
-					out.WriteString(": " + cmd)
-				}
-			} else if toolName == "read" || toolName == "write" || toolName == "edit" {
-				if p, ok := args["path"].(string); ok {
-					out.WriteString(": " + p)
-				}
-			}
-			out.WriteString("\n")
+			out.WriteString(formatToolCall(toolName, args, 120) + "\n")
 		case "tool_execution_end":
 			isError, _ := event["isError"].(bool)
+			result, _ := event["result"].(map[string]interface{})
 			if isError {
-				out.WriteString("❌ error\n")
+				errText := formatToolResult(result, 500)
+				if errText != "" {
+					out.WriteString("❌ " + errText)
+				} else {
+					out.WriteString("❌ error\n")
+				}
 			} else {
-				result, _ := event["result"].(map[string]interface{})
-				if result != nil {
-					content, _ := result["content"].([]interface{})
-					for _, c := range content {
-						cm, _ := c.(map[string]interface{})
-						if t, _ := cm["type"].(string); t == "text" {
-							text, _ := cm["text"].(string)
-							if text != "" {
-								if len(text) > 200 {
-									text = text[:197] + "..."
-								}
-								out.WriteString("→ " + text + "\n")
+				out.WriteString(formatToolResult(result, 500))
+			}
+		case "turn_end":
+			// Flush any accumulated text that wasn't closed by text_end
+			// (e.g., truncated logs or incomplete streams).
+			if text := strings.TrimSpace(currentText.String()); text != "" {
+				out.WriteString(text + "\n")
+			}
+			currentText.Reset()
+
+			turnCount++
+			// Show token/cost info in turn separator
+			msg, _ := event["message"].(map[string]interface{})
+			if msg != nil {
+				usage, _ := msg["usage"].(map[string]interface{})
+				if usage != nil {
+					tokens, _ := usage["totalTokens"].(float64)
+					costInfo, _ := usage["cost"].(map[string]interface{})
+					if tokens > 0 {
+						costStr := ""
+						if costInfo != nil {
+							if total, ok := costInfo["total"].(float64); ok && total > 0 {
+								costStr = fmt.Sprintf(" $%.4f", total)
 							}
 						}
+						out.WriteString(fmt.Sprintf("  [turn %d · %d tokens%s]\n", turnCount, int(tokens), costStr))
 					}
 				}
 			}
-		case "turn_end":
-			turnCount++
 			out.WriteString("---\n")
 		}
 	}
 
+	// Flush any remaining accumulated text at end of stream.
+	if text := strings.TrimSpace(currentText.String()); text != "" {
+		out.WriteString(text + "\n")
+	}
+
 	return out.String()
+}
+
+// filterLastNTurns returns the NDJSON data for only the last N turns.
+// A turn is delimited by turn_start/turn_end events.
+func filterLastNTurns(data []byte, n int) []byte {
+	if len(data) == 0 {
+		return data
+	}
+
+	// Find all turn_start byte positions by scanning line by line.
+	var turnStartPositions []int
+	lineStart := 0
+	for i := 0; i <= len(data); i++ {
+		if i == len(data) || data[i] == '\n' {
+			line := data[lineStart:i]
+			if len(line) > 0 && strings.Contains(string(line), `"turn_start"`) {
+				var event map[string]interface{}
+				if err := json.Unmarshal(line, &event); err == nil {
+					if t, _ := event["type"].(string); t == "turn_start" {
+						turnStartPositions = append(turnStartPositions, lineStart)
+					}
+				}
+			}
+			lineStart = i + 1
+		}
+	}
+	if len(turnStartPositions) <= n {
+		return data
+	}
+	startAt := turnStartPositions[len(turnStartPositions)-n]
+	return data[startAt:]
+}
+
+// formatToolCall formats a tool_execution_start event into a display string.
+// maxCmdLen controls how long bash commands and similar details can be.
+func formatToolCall(toolName string, args map[string]interface{}, maxCmdLen int) string {
+	msg := "🔧 " + toolName
+	switch toolName {
+	case "bash":
+		if cmd, ok := args["command"].(string); ok {
+			cmd = strings.ReplaceAll(cmd, "\n", " ")
+			r := []rune(cmd)
+			if len(r) > maxCmdLen {
+				cmd = string(r[:maxCmdLen-3]) + "..."
+			}
+			msg += ": " + cmd
+		}
+	case "read", "write":
+		if p, ok := args["path"].(string); ok {
+			msg += ": " + p
+		}
+	case "edit":
+		if p, ok := args["path"].(string); ok {
+			msg += ": " + p
+		}
+	case "todo":
+		if action, ok := args["action"].(string); ok {
+			msg += " " + action
+			if title, ok := args["title"].(string); ok {
+				msg += ": " + title
+			} else if id, ok := args["id"].(string); ok {
+				msg += " " + id
+			}
+		}
+	case "send_to_session":
+		if name, ok := args["sessionName"].(string); ok {
+			msg += " → " + name
+		} else if id, ok := args["sessionId"].(string); ok {
+			msg += " → " + id
+		}
+	case "AskUserQuestion":
+		if q, ok := args["question"].(string); ok {
+			r := []rune(q)
+			if len(r) > maxCmdLen {
+				q = string(r[:maxCmdLen-3]) + "..."
+			}
+			msg += ": " + q
+		}
+	}
+	return msg
+}
+
+// formatToolResult formats the result text from a tool_execution_end event.
+// maxLen controls the truncation limit for the result text (in runes).
+func formatToolResult(result map[string]interface{}, maxLen int) string {
+	if result == nil {
+		return ""
+	}
+	content, _ := result["content"].([]interface{})
+	for _, c := range content {
+		cm, _ := c.(map[string]interface{})
+		if t, _ := cm["type"].(string); t == "text" {
+			text, _ := cm["text"].(string)
+			if text != "" {
+				r := []rune(text)
+				if len(r) > maxLen {
+					text = string(r[:maxLen-3]) + "..."
+				}
+				return fmt.Sprintf("→ %s\n", text)
+			}
+		}
+	}
+	return ""
 }
 
 func splitLines(data []byte) []string {

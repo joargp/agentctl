@@ -67,6 +67,24 @@ func TestParseDurationInvalidMixedUnitsEndingInDay(t *testing.T) {
 	}
 }
 
+func TestCountTurnsSingleTurn(t *testing.T) {
+	f, err := os.CreateTemp("", "agentctl-test-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+
+	f.WriteString(`{"type":"turn_start"}
+{"type":"turn_end"}
+`)
+	f.Close()
+
+	turns := countTurns(f.Name())
+	if turns != 1 {
+		t.Fatalf("expected 1 turn, got %d", turns)
+	}
+}
+
 func TestReadTailSmallFile(t *testing.T) {
 	// readTail on a nonexistent file should return nil
 	data := readTail("/nonexistent/file", 1024)
@@ -79,6 +97,35 @@ func TestExtractTotalCostNoFile(t *testing.T) {
 	cost := extractTotalCost("/nonexistent/file")
 	if cost != 0 {
 		t.Fatalf("expected 0 cost for nonexistent file, got %f", cost)
+	}
+}
+
+func TestCountTurnsNoFile(t *testing.T) {
+	turns := countTurns("/nonexistent/file")
+	if turns != 0 {
+		t.Fatalf("expected 0 turns for nonexistent file, got %d", turns)
+	}
+}
+
+func TestCountTurnsFromLog(t *testing.T) {
+	f, err := os.CreateTemp("", "agentctl-test-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+
+	f.WriteString(`{"type":"turn_start"}
+{"type":"turn_end"}
+{"type":"turn_start"}
+{"type":"turn_end"}
+{"type":"turn_start"}
+{"type":"turn_end"}
+`)
+	f.Close()
+
+	turns := countTurns(f.Name())
+	if turns != 3 {
+		t.Fatalf("expected 3 turns, got %d", turns)
 	}
 }
 

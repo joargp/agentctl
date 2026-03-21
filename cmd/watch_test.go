@@ -46,6 +46,73 @@ func TestCompletionSummaryLinesPreservesAssistantBlockquoteLines(t *testing.T) {
 	}
 }
 
+func TestCompletionSummaryLinesEmptyLog(t *testing.T) {
+	got := completionSummaryLines([]byte(""))
+	if len(got) != 0 {
+		t.Fatalf("expected empty for empty log, got %v", got)
+	}
+}
+
+func TestCompletionSummaryLinesSkipsToolResults(t *testing.T) {
+	data := []byte(strings.Join([]string{
+		`{"type":"tool_execution_end","toolName":"bash","result":{"content":[{"type":"text","text":"hello world"}]},"isError":false}`,
+		`{"type":"text_start","contentIndex":0}`,
+		`{"type":"text_delta","contentIndex":0,"delta":"The output was hello."}`,
+		`{"type":"text_end","contentIndex":0,"content":"The output was hello."}`,
+	}, "\n"))
+
+	got := completionSummaryLines(data)
+	// Should only include the assistant text, not the tool result
+	if len(got) != 1 {
+		t.Fatalf("expected 1 line, got %d: %#v", len(got), got)
+	}
+	if got[0] != "The output was hello." {
+		t.Fatalf("expected assistant text, got %q", got[0])
+	}
+}
+
+func TestCompletionSummaryLinesTruncatesTo20Lines(t *testing.T) {
+	var lines []string
+	lines = append(lines, `{"type":"text_start","contentIndex":0}`)
+	// Generate 25 lines of text
+	bigText := ""
+	for i := 0; i < 25; i++ {
+		bigText += fmt.Sprintf("Line %d\n", i)
+	}
+	lines = append(lines, fmt.Sprintf(`{"type":"text_delta","contentIndex":0,"delta":%q}`, bigText))
+	lines = append(lines, fmt.Sprintf(`{"type":"text_end","contentIndex":0,"content":%q}`, bigText))
+	data := []byte(strings.Join(lines, "\n"))
+
+	got := completionSummaryLines(data)
+	if len(got) > 20 {
+		t.Fatalf("expected max 20 lines, got %d", len(got))
+	}
+}
+
+func TestTruncateTask(t *testing.T) {
+	// Single line under limit
+	if got := truncateTask("hello", 100); got != "hello" {
+		t.Fatalf("expected unchanged short task, got %q", got)
+	}
+	// Multi-line takes first line only
+	if got := truncateTask("line1\nline2\nline3", 100); got != "line1" {
+		t.Fatalf("expected first line only, got %q", got)
+	}
+	// Long first line gets truncated
+	long := strings.Repeat("x", 200)
+	got := truncateTask(long, 100)
+	if len(got) > 100 {
+		t.Fatalf("expected truncated to 100, got len=%d", len(got))
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected ... suffix, got %q", got)
+	}
+	// Whitespace trimmed
+	if got := truncateTask("  hello  ", 100); got != "hello" {
+		t.Fatalf("expected trimmed, got %q", got)
+	}
+}
+
 func TestCompletionMessageFallsBackToFullLogWhenTailMissesDelta(t *testing.T) {
 	tmpDir := t.TempDir()
 	logFile := filepath.Join(tmpDir, "session.log")

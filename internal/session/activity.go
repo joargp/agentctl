@@ -177,8 +177,9 @@ func formatAssistantTextStatus(content string) string {
 func truncateActivityText(s string, maxLen int) string {
 	s = strings.TrimSpace(s)
 	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) > maxLen {
-		return s[:maxLen-3] + "..."
+	r := []rune(s)
+	if len(r) > maxLen {
+		return string(r[:maxLen-3]) + "..."
 	}
 	return s
 }

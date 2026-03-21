@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/joargp/agentctl/internal/session"
@@ -82,10 +83,26 @@ func printSessionStatus(s *session.Session) {
 		statusLabel = "running"
 	}
 
+	// Show extra info for finished sessions.
+	extra := ""
+	if !running {
+		cost := extractTotalCost(s.LogFile)
+		// Show turn count only if state doesn't already include it.
+		if !strings.Contains(state, "turn") {
+			turns := countTurns(s.LogFile)
+			if turns > 0 {
+				extra += fmt.Sprintf("  %d turns", turns)
+			}
+		}
+		if cost > 0 {
+			extra += fmt.Sprintf("  $%.4f", cost)
+		}
+	}
+
 	label := s.Label()
 	if detail != "" {
-		fmt.Printf("%s  %s  %s  %s  %s: %s\n", s.ID, label, statusLabel, age, state, detail)
+		fmt.Printf("%s  %s  %s  %s  %s: %s%s\n", s.ID, label, statusLabel, age, state, detail, extra)
 	} else {
-		fmt.Printf("%s  %s  %s  %s  %s\n", s.ID, label, statusLabel, age, state)
+		fmt.Printf("%s  %s  %s  %s  %s%s\n", s.ID, label, statusLabel, age, state, extra)
 	}
 }

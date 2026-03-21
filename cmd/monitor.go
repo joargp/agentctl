@@ -277,37 +277,14 @@ func renderJSONLine(line string) string {
 	case "tool_execution_start":
 		toolName, _ := event["toolName"].(string)
 		args, _ := event["args"].(map[string]interface{})
-		msg := fmt.Sprintf("🔧 %s", toolName)
-		if toolName == "bash" {
-			if cmd, ok := args["command"].(string); ok {
-				if len(cmd) > 80 {
-					cmd = cmd[:77] + "..."
-				}
-				msg += ": " + cmd
-			}
-		} else if toolName == "read" || toolName == "write" || toolName == "edit" {
-			if p, ok := args["path"].(string); ok {
-				msg += ": " + p
-			}
-		}
-		return msg
+		return formatToolCall(toolName, args, 80)
 	case "tool_execution_update":
 		// Streaming partial output from tool (e.g., bash stdout)
 		partialResult, _ := event["partialResult"].(map[string]interface{})
-		if partialResult != nil {
-			content, _ := partialResult["content"].([]interface{})
-			for _, c := range content {
-				cm, _ := c.(map[string]interface{})
-				if t, _ := cm["type"].(string); t == "text" {
-					text, _ := cm["text"].(string)
-					if text != "" {
-						if len(text) > 200 {
-							text = text[:197] + "..."
-						}
-						return "  " + text
-					}
-				}
-			}
+		if result := formatToolResult(partialResult, 200); result != "" {
+			// Replace "→ " prefix with "  " for partial results, strip trailing newline
+			result = strings.TrimSuffix(strings.TrimPrefix(result, "→ "), "\n")
+			return "  " + result
 		}
 		return ""
 	case "tool_execution_end":

@@ -49,10 +49,12 @@ func runCosts(_ *cobra.Command, _ []string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tMODEL\tAGE\tCOST")
+	fmt.Fprintln(w, "ID\tLABEL\tMODEL\tAGE\tCOST")
 
 	var totalCost float64
 	count := 0
+	modelCosts := make(map[string]float64)
+	modelCounts := make(map[string]int)
 	for _, s := range sessions {
 		if sinceFilter > 0 && time.Since(s.StartedAt) > sinceFilter {
 			continue
@@ -62,14 +64,27 @@ func runCosts(_ *cobra.Command, _ []string) error {
 		age := time.Since(s.StartedAt).Round(time.Second)
 		count++
 
+		modelCosts[s.Model] += cost
+		modelCounts[s.Model]++
+
 		costStr := ""
 		if cost > 0 {
 			costStr = fmt.Sprintf("$%.4f", cost)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.ID, s.Model, age, costStr)
+		label := s.Label()
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, label, s.Model, age, costStr)
 	}
 
-	fmt.Fprintf(w, "\t\t\t\n")
-	fmt.Fprintf(w, "TOTAL\t%d sessions\t\t$%.4f\n", count, totalCost)
+	fmt.Fprintf(w, "\t\t\t\t\n")
+
+	// Per-model breakdown
+	if len(modelCosts) > 1 {
+		for model, cost := range modelCosts {
+			fmt.Fprintf(w, "\t\t%s\t%d sessions\t$%.4f\n", model, modelCounts[model], cost)
+		}
+		fmt.Fprintf(w, "\t\t\t\t\n")
+	}
+
+	fmt.Fprintf(w, "TOTAL\t\t%d sessions\t\t$%.4f\n", count, totalCost)
 	return w.Flush()
 }

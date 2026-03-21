@@ -228,16 +228,18 @@ func truncateTask(task string, maxLen int) string {
 	if idx := strings.IndexAny(task, "\n\r"); idx >= 0 {
 		task = task[:idx]
 	}
-	if len(task) > maxLen {
-		return task[:maxLen-3] + "..."
+	r := []rune(task)
+	if len(r) > maxLen {
+		return string(r[:maxLen-3]) + "..."
 	}
 	return task
 }
 
 func completionMessage(s *session.Session) string {
 	task := s.Task
-	if len(task) > 80 {
-		task = task[:77] + "..."
+	taskRunes := []rune(task)
+	if len(taskRunes) > 80 {
+		task = string(taskRunes[:77]) + "..."
 	}
 
 	msg := fmt.Sprintf(

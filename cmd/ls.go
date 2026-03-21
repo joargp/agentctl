@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -28,6 +29,7 @@ var (
 	lsCwd     string
 	lsRunning bool
 	lsDone    bool
+	lsQuiet   bool
 )
 
 func init() {
@@ -37,6 +39,7 @@ func init() {
 	lsCmd.Flags().StringVar(&lsCwd, "cwd", "", "filter by working directory (substring match)")
 	lsCmd.Flags().BoolVar(&lsRunning, "running", false, "show only running sessions")
 	lsCmd.Flags().BoolVar(&lsDone, "done", false, "show only completed sessions")
+	lsCmd.Flags().BoolVarP(&lsQuiet, "quiet", "q", false, "print only session IDs (for scripting)")
 	rootCmd.AddCommand(lsCmd)
 }
 
@@ -61,6 +64,25 @@ func runLs(_ *cobra.Command, _ []string) error {
 		return nil
 	}
 
+	// Sort by most recent first.
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].StartedAt.After(sessions[j].StartedAt)
+	})
+
+	var sinceFilter time.Duration
+	if lsSince != "" {
+		var err error
+		sinceFilter, err = parseDuration(lsSince)
+		if err != nil {
+			return fmt.Errorf("invalid --since duration: %w", err)
+		}
+	}
+
+	// Quick-exit for quiet/scripting mode.
+	if lsQuiet {
+		return runLsQuiet(sessions, sinceFilter)
+	}
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	// Check if any session has a name set.
 	hasNames := false
@@ -72,17 +94,9 @@ func runLs(_ *cobra.Command, _ []string) error {
 	}
 
 	if hasNames {
-		fmt.Fprintln(w, "ID\tNAME\tMODEL\tSTATUS\tAGE\tCOST\tTASK")
+		fmt.Fprintln(w, "ID\tNAME\tMODEL\tSTATUS\tAGE\tTURNS\tCOST\tTASK")
 	} else {
-		fmt.Fprintln(w, "ID\tMODEL\tSTATUS\tAGE\tCOST\tTASK")
-	}
-	var sinceFilter time.Duration
-	if lsSince != "" {
-		var err error
-		sinceFilter, err = parseDuration(lsSince)
-		if err != nil {
-			return fmt.Errorf("invalid --since duration: %w", err)
-		}
+		fmt.Fprintln(w, "ID\tMODEL\tSTATUS\tAGE\tTURNS\tCOST\tTASK")
 	}
 
 	for _, s := range sessions {
@@ -118,22 +132,55 @@ func runLs(_ *cobra.Command, _ []string) error {
 			}
 		}
 		age := time.Since(s.StartedAt).Round(time.Second)
-		task := s.Task
-		if len(task) > 50 {
-			task = task[:47] + "..."
+		task := strings.ReplaceAll(s.Task, "\n", " ")
+		task = strings.TrimSpace(task)
+		taskRunes := []rune(task)
+		if len(taskRunes) > 50 {
+			task = string(taskRunes[:47]) + "..."
 		}
 		cost := extractTotalCost(s.LogFile)
 		costStr := ""
 		if cost > 0 {
 			costStr = fmt.Sprintf("$%.4f", cost)
 		}
+		turns := countTurns(s.LogFile)
+		turnsStr := ""
+		if turns > 0 {
+			turnsStr = strconv.Itoa(turns)
+		}
 		if hasNames {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Name, s.Model, status, age, costStr, task)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Name, s.Model, status, age, turnsStr, costStr, task)
 		} else {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Model, status, age, costStr, task)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Model, status, age, turnsStr, costStr, task)
 		}
 	}
 	return w.Flush()
+}
+
+func runLsQuiet(sessions []*session.Session, sinceFilter time.Duration) error {
+	for _, s := range sessions {
+		if lsModel != "" && !strings.Contains(s.Model, lsModel) {
+			continue
+		}
+		if lsTask != "" && !strings.Contains(strings.ToLower(s.Task), strings.ToLower(lsTask)) {
+			continue
+		}
+		if lsCwd != "" && !strings.Contains(s.Cwd, lsCwd) {
+			continue
+		}
+		if sinceFilter > 0 && time.Since(s.StartedAt) > sinceFilter {
+			continue
+		}
+		running := tmux.SessionExists(s.TmuxSession)
+		if lsRunning && !running {
+			continue
+		}
+		if lsDone && running {
+			continue
+		}
+		fmt.Println(s.ID)
+	}
+	return nil
 }
 
 // readTail reads the last n bytes of a file. Returns nil on error.
@@ -164,23 +211,41 @@ func readTail(path string, n int64) []byte {
 	return buf
 }
 
-// extractTotalCost scans the JSON log for the last turn_end or agent_end event
-// and sums up the cost. Returns 0 if no cost info found.
-func extractTotalCost(logFile string) float64 {
-	data, err := os.ReadFile(logFile)
+// countTurns counts the number of turn_end events in a log file.
+// Uses line-by-line scanning to avoid loading huge logs into memory.
+func countTurns(logFile string) int {
+	f, err := os.Open(logFile)
 	if err != nil {
 		return 0
 	}
+	defer f.Close()
+
+	count := 0
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	for scanner.Scan() {
+		if strings.Contains(scanner.Text(), `"turn_end"`) {
+			count++
+		}
+	}
+	return count
+}
+
+// extractTotalCost scans the JSON log for turn_end events and sums up costs.
+// Uses line-by-line scanning to avoid loading huge logs into memory.
+func extractTotalCost(logFile string) float64 {
+	f, err := os.Open(logFile)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
 
 	var totalCost float64
-	scanner := bufio.NewScanner(strings.NewReader(string(data)))
-	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if line == "" {
-			continue
-		}
 		// Quick filter: only parse lines that might have cost data
 		if !strings.Contains(line, `"turn_end"`) {
 			continue
