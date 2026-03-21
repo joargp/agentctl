@@ -26,8 +26,8 @@ import (
 //   - message_end: entire "message" field (assembled content redundant with deltas
 //     and with turn_end; no consumer reads it).
 //
-//   - turn_end: "message.content" array (assembled content redundant with deltas;
-//     only message.usage is read for token counts and cost totals).
+//   - turn_end: preserved (fires once per turn; message.content is used by
+//     completion notifications and as a fallback for summary rendering).
 //
 //   - tool_execution_update: "args" (dup of tool_execution_start.args).
 //     Note: "partialResult" is preserved — monitor reads it for live output.
@@ -154,11 +154,13 @@ func sanitizeMessageStart(event map[string]interface{}) bool {
 	if role == "user" {
 		return false // preserve user message content for dump display
 	}
+	// Preserve errorMessage so dump can display API errors.
+	changed := false
 	if _, ok := msg["content"]; ok {
 		delete(msg, "content")
-		return true
+		changed = true
 	}
-	return false
+	return changed
 }
 
 // sanitizeToolExecutionUpdate strips redundant fields from tool_execution_update events:
@@ -174,18 +176,12 @@ func sanitizeToolExecutionUpdate(event map[string]interface{}) bool {
 	return false
 }
 
-// sanitizeTurnEnd strips the "content" array from turn_end.message.
-// The full assembled content is already captured by the individual delta events.
-// All agentctl consumers (dump, monitor, ls, costs) only read turn_end.message.usage
-// for token counts and cost totals — nothing reads message.content.
+// sanitizeTurnEnd used to strip message.content, but it is now preserved.
+// turn_end fires once per turn (not quadratic) and carries the assembled
+// assistant response — used by completion notifications and as a fallback
+// when text_delta events are missing or the log is read from a tail slice.
+// Only token usage was previously consumed; now message.content is read by
+// completionSummaryLines (watch.go) and renderJSONLogSummary (dump.go).
 func sanitizeTurnEnd(event map[string]interface{}) bool {
-	msg, _ := event["message"].(map[string]interface{})
-	if msg == nil {
-		return false
-	}
-	if _, ok := msg["content"]; ok {
-		delete(msg, "content")
-		return true
-	}
 	return false
 }

@@ -261,11 +261,11 @@ func completionMessage(s *session.Session) string {
 		}
 	}
 	if len(summary) > 0 {
-		msg += "\n**Summary:**\n```\n"
+		msg += "\n**Summary:**\n"
 		for _, l := range summary {
 			msg += l + "\n"
 		}
-		msg += "```\n"
+		msg += "\n"
 	}
 
 	msg += fmt.Sprintf("\nRun `agentctl dump %s` for the full output.", s.ID)
@@ -339,6 +339,15 @@ func completionSummaryLines(data []byte) []string {
 		case "text_end":
 			content, _ := event["content"].(string)
 			flushText(content)
+		case "turn_end":
+			// Flush any accumulated deltas first.
+			flushText("")
+			// If no text was captured from deltas, extract from turn_end.message.content.
+			if len(summary) == 0 {
+				if msg, _ := event["message"].(map[string]interface{}); msg != nil {
+					summary = extractTextFromContent(msg)
+				}
+			}
 		}
 	}
 
@@ -346,4 +355,85 @@ func completionSummaryLines(data []byte) []string {
 		summary = summary[len(summary)-20:]
 	}
 	return summary
+}
+
+// extractLastTurnText finds the last turn_end event in the log data and
+// returns the assembled assistant text from message.content. Used by --wait
+// to show only the final response without tool calls or turn metadata.
+func extractLastTurnText(data []byte) string {
+	// Scan backwards for the last turn_end line.
+	var lastTurnEnd []byte
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) > 0 && strings.Contains(string(line), `"turn_end"`) {
+			lastTurnEnd = append([]byte(nil), line...)
+		}
+	}
+	if lastTurnEnd == nil {
+		return ""
+	}
+
+	var event map[string]interface{}
+	if err := json.Unmarshal(lastTurnEnd, &event); err != nil {
+		return ""
+	}
+	if t, _ := event["type"].(string); t != "turn_end" {
+		return ""
+	}
+	msg, _ := event["message"].(map[string]interface{})
+	if msg == nil {
+		return ""
+	}
+
+	var parts []string
+	content, _ := msg["content"].([]interface{})
+	for _, c := range content {
+		block, _ := c.(map[string]interface{})
+		if block == nil {
+			continue
+		}
+		if blockType, _ := block["type"].(string); blockType == "text" {
+			if text, _ := block["text"].(string); strings.TrimSpace(text) != "" {
+				parts = append(parts, strings.TrimSpace(text))
+			}
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// extractTextFromContent extracts text blocks from a message's content array.
+// Used as a fallback when text_delta events were not captured.
+func extractTextFromContent(msg map[string]interface{}) []string {
+	content, _ := msg["content"].([]interface{})
+	if len(content) == 0 {
+		return nil
+	}
+	var lines []string
+	for _, c := range content {
+		block, _ := c.(map[string]interface{})
+		if block == nil {
+			continue
+		}
+		blockType, _ := block["type"].(string)
+		if blockType != "text" {
+			continue
+		}
+		text, _ := block["text"].(string)
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		for _, line := range splitLines([]byte(text)) {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			lines = append(lines, line)
+		}
+	}
+	if len(lines) > 20 {
+		lines = lines[len(lines)-20:]
+	}
+	return lines
 }

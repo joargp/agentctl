@@ -291,6 +291,9 @@ func renderJSONLineForDump(line string) string {
 				}
 			}
 		}
+		if stopReason, _ := msg["stopReason"].(string); stopReason == "error" {
+			return formatAPIError(msg)
+		}
 	case "message_update":
 		ae, _ := event["assistantMessageEvent"].(map[string]interface{})
 		if ae == nil {
@@ -385,6 +388,9 @@ func renderJSONLog(data []byte) string {
 						out.WriteString(fmt.Sprintf("\n> %s\n\n", text))
 					}
 				}
+			}
+			if stopReason, _ := msg["stopReason"].(string); stopReason == "error" {
+				out.WriteString(formatAPIError(msg))
 			}
 		case "message_update":
 			ae, _ := event["assistantMessageEvent"].(map[string]interface{})
@@ -502,6 +508,9 @@ func renderJSONLogSummary(data []byte) string {
 						}
 					}
 				}
+			}
+			if stopReason, _ := msg["stopReason"].(string); stopReason == "error" {
+				out.WriteString(formatAPIError(msg))
 			}
 		case "message_update":
 			ae, _ := event["assistantMessageEvent"].(map[string]interface{})
@@ -631,6 +640,37 @@ func filterLastNTurns(data []byte, n int) []byte {
 	}
 	startAt := turnStartPositions[len(turnStartPositions)-n]
 	return data[startAt:]
+}
+
+// formatAPIError formats an error message from a message_start event with stopReason "error".
+func formatAPIError(msg map[string]interface{}) string {
+	errMsg, _ := msg["errorMessage"].(string)
+	if errMsg == "" {
+		return "❌ API error\n"
+	}
+	// Try to extract a readable message from nested JSON error strings.
+	var parsed map[string]interface{}
+	if json.Unmarshal([]byte(errMsg), &parsed) == nil {
+		if inner, ok := parsed["error"].(map[string]interface{}); ok {
+			if m, ok := inner["message"].(string); ok {
+				errMsg = m
+				// The message itself might be JSON (double-encoded).
+				var innerParsed map[string]interface{}
+				if json.Unmarshal([]byte(m), &innerParsed) == nil {
+					if e2, ok := innerParsed["error"].(map[string]interface{}); ok {
+						if m2, ok := e2["message"].(string); ok {
+							errMsg = m2
+						}
+					}
+				}
+			}
+		}
+	}
+	r := []rune(errMsg)
+	if len(r) > 500 {
+		errMsg = string(r[:497]) + "..."
+	}
+	return fmt.Sprintf("❌ %s\n", errMsg)
 }
 
 // formatToolCall formats a tool_execution_start event into a display string.

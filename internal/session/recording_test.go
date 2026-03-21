@@ -227,14 +227,15 @@ func TestSanitizeRecordingLineStripsToolExecutionUpdateArgs(t *testing.T) {
 	}
 }
 
-func TestSanitizeRecordingLineStrips_TurnEndContent(t *testing.T) {
-	// turn_end.message.content is the full assembled response — already in deltas.
-	// Only message.usage is read by consumers (costs, ls, dump, monitor).
+func TestSanitizeRecordingLinePreserves_TurnEndContent(t *testing.T) {
+	// turn_end.message.content is now preserved — used by completion notifications
+	// and as a fallback for summary rendering when text_delta events are missing.
 	input := []byte(`{"type":"turn_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"usage":{"totalTokens":5000,"cost":{"total":0.01}},"stopReason":"end_turn"}}` + "\n")
 
 	got := SanitizeRecordingLine(input)
-	if len(got) == 0 || got[len(got)-1] != '\n' {
-		t.Fatalf("expected trailing newline, got %q", string(got))
+	// turn_end is no longer modified, so output should equal input.
+	if string(got) != string(input) {
+		t.Fatalf("expected turn_end to pass through unchanged, got %q", string(got))
 	}
 
 	var event map[string]interface{}
@@ -246,20 +247,17 @@ func TestSanitizeRecordingLineStrips_TurnEndContent(t *testing.T) {
 	if msg == nil {
 		t.Fatal("expected message to remain on turn_end")
 	}
-	if _, ok := msg["content"]; ok {
-		t.Fatalf("expected message.content to be stripped from turn_end, got %v", msg)
+	// content must now be preserved
+	if _, ok := msg["content"]; !ok {
+		t.Fatal("expected message.content to be preserved on turn_end")
 	}
-	// usage must be preserved for cost tracking
+	// usage must still be preserved for cost tracking
 	usage, _ := msg["usage"].(map[string]interface{})
 	if usage == nil {
 		t.Fatal("expected message.usage to be preserved")
 	}
 	if usage["totalTokens"].(float64) != 5000 {
 		t.Fatalf("expected totalTokens=5000, got %v", usage["totalTokens"])
-	}
-	// stopReason and other fields should also remain
-	if msg["stopReason"] != "end_turn" {
-		t.Fatalf("expected stopReason to remain, got %v", msg["stopReason"])
 	}
 }
 
