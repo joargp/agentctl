@@ -30,7 +30,7 @@ Prints the session ID to stdout immediately, then returns (or blocks with --wait
 The agent's output is streamed to a log file with large delta payloads stripped.
 
 Examples:
-  agentctl run --model claude-sonnet-4-6 --task "add tests for the auth module"
+  agentctl run --model claude-opus-4-6 --task "add tests for the auth module"
   agentctl run --model gpt-5.4 --task-file /tmp/task.txt --cwd /repos/myapp
   agentctl run --model gpt-5.4 --task "review this PR" --cwd /repos/myapp --wait`,
 	RunE: runRun,
@@ -195,7 +195,15 @@ func runRun(_ *cobra.Command, _ []string) error {
 		if err := cacheSessionLogStats(sess); err != nil {
 			fmt.Fprintf(os.Stderr, "warn: cache session stats: %v\n", err)
 		}
-		fmt.Fprintln(os.Stderr, "done.")
+		fmt.Fprintf(os.Stderr, "done.\n\n")
+
+		// Print the agent's final response to stdout.
+		if data, err := os.ReadFile(logFile); err == nil && len(data) > 0 {
+			text := extractLastTurnText(data)
+			if text != "" {
+				fmt.Println(text)
+			}
+		}
 	}
 
 	return nil
