@@ -24,13 +24,13 @@ Requires `tmux` and `pi` in `$PATH`.
 
 ```bash
 # Fire and forget — capture the ID
-id=$(agentctl run --model claude-opus-4-6 --task "add unit tests to the auth module" --cwd /repos/myapp 2>/dev/null)
+id=$(agentctl run --model claude-sonnet-4-6 --task "add unit tests to the auth module" --cwd /repos/myapp 2>/dev/null)
 
 # Or pass task from file (safer for large prompts)
-id=$(agentctl run --model claude-opus-4-6 --task-file /tmp/task.txt --cwd /repos/myapp 2>/dev/null)
+id=$(agentctl run --model claude-sonnet-4-6 --task-file /tmp/task.txt --cwd /repos/myapp 2>/dev/null)
 
 # Block until done
-agentctl run --model claude-opus-4-6 --task "fix the failing tests" --cwd /repos/myapp --wait
+agentctl run --model claude-sonnet-4-6 --task "fix the failing tests" --cwd /repos/myapp --wait
 ```
 
 Exactly one of `--task` or `--task-file` must be provided.
@@ -45,10 +45,10 @@ The session ID is printed to **stdout**; hints go to **stderr** so `id=$(agentct
 
 ```bash
 # Uses $PI_SESSION_ID automatically when present, but only when no explicit notifier is selected
-id=$(agentctl run --model claude-opus-4-6 --task "..." 2>/dev/null)
+id=$(agentctl run --model claude-sonnet-4-6 --task "..." 2>/dev/null)
 
 # Or target a specific pi session explicitly
-id=$(agentctl run --model claude-opus-4-6 --task "..." --notify-session "$PI_SESSION_ID" 2>/dev/null)
+id=$(agentctl run --model claude-sonnet-4-6 --task "..." --notify-session "$PI_SESSION_ID" 2>/dev/null)
 ```
 
 #### Munin shorthand
@@ -85,7 +85,7 @@ This writes an `immediate` event JSON file when the agent completes.
 Use `provider/model` when a model name is ambiguous across providers:
 
 ```bash
-agentctl run --model openai-codex/gpt-5.3-codex --task "..."
+agentctl run --model openai/gpt-5.4 --task "..."
 ```
 
 ### Monitor live output
@@ -98,18 +98,18 @@ agentctl monitor <id> <id>   # specific sessions
 Labels default to the model name. The short ID is only appended when two sessions share the same model:
 
 ```
-[claude-opus-4-6]    Nodes whisper across the wire,
-[gpt-5.3-codex]      Consensus blooms where failures test the light.
+[claude-sonnet-4-6]  Nodes whisper across the wire,
+[gpt-5.4]            Consensus blooms where failures test the light.
 ```
 
 Use `--name` for readable labels:
 
 ```bash
-id1=$(agentctl run --model claude-opus-4-6            --name opus  --task "..." 2>/dev/null)
-id2=$(agentctl run --model openai-codex/gpt-5.3-codex --name codex --task "..." 2>/dev/null)
+id1=$(agentctl run --model claude-sonnet-4-6 --name sonnet --task "..." 2>/dev/null)
+id2=$(agentctl run --model openai/gpt-5.4   --name gpt    --task "..." 2>/dev/null)
 agentctl monitor $id1 $id2
-# [opus]   ...
-# [codex]  ...
+# [sonnet] ...
+# [gpt]    ...
 ```
 
 ### Read output

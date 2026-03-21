@@ -194,7 +194,7 @@ func TestWatcherArgsIncludesProgressFlag(t *testing.T) {
 }
 
 func TestBuildRunScriptUsesRecorder(t *testing.T) {
-	script := buildRunScript("/tmp/work", "/tmp/task.txt", "o3", "/tmp/run.log", "/usr/local/bin/agentctl")
+	script := buildRunScript("/tmp/work", "/tmp/task.txt", "gpt-5.4", "/tmp/run.log", "/usr/local/bin/agentctl")
 
 	if strings.Contains(script, "tee -a") {
 		t.Fatalf("expected run script to stop using tee, got %q", script)

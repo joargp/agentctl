@@ -30,9 +30,9 @@ Prints the session ID to stdout immediately, then returns (or blocks with --wait
 The agent's output is streamed to a log file with large delta payloads stripped.
 
 Examples:
-  agentctl run --model claude-4.6 --task "add tests for the auth module"
-  agentctl run --model o3 --task-file /tmp/task.txt --cwd /repos/myapp
-  agentctl run --model o3 --task "review this PR" --cwd /repos/myapp --wait`,
+  agentctl run --model claude-sonnet-4-6 --task "add tests for the auth module"
+  agentctl run --model gpt-5.4 --task-file /tmp/task.txt --cwd /repos/myapp
+  agentctl run --model gpt-5.4 --task "review this PR" --cwd /repos/myapp --wait`,
 	RunE: runRun,
 }
 
