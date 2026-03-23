@@ -27,6 +27,7 @@ Extracts assistant text, tool calls, and tool results from the NDJSON event stre
 Examples:
   agentctl dump abc123
   agentctl dump abc123 --summary
+  agentctl dump abc123 --condensed
   agentctl dump abc123 --summary --last
   agentctl dump abc123 --summary --turns 3
   agentctl dump abc123 --lines 200
@@ -38,20 +39,22 @@ Examples:
 }
 
 var (
-	dumpLines    int
-	dumpJSON     bool
-	dumpFollow   bool
-	dumpSummary  bool
-	dumpNoHeader bool
-	dumpTurns    int
-	dumpLast     bool
+	dumpLines     int
+	dumpJSON      bool
+	dumpFollow    bool
+	dumpSummary   bool
+	dumpCondensed bool
+	dumpNoHeader  bool
+	dumpTurns     int
+	dumpLast      bool
 )
 
 func init() {
 	dumpCmd.Flags().IntVarP(&dumpLines, "lines", "n", 100, "number of lines to show")
 	dumpCmd.Flags().BoolVar(&dumpJSON, "json", false, "output raw JSON events")
 	dumpCmd.Flags().BoolVarP(&dumpFollow, "follow", "f", false, "follow output like tail -f (rendered or raw JSON)")
-	dumpCmd.Flags().BoolVar(&dumpSummary, "summary", false, "condensed output (tool calls + final text only, no intermediate deltas)")
+	dumpCmd.Flags().BoolVar(&dumpSummary, "summary", false, "summary output (tool calls + final text only, no intermediate deltas)")
+	dumpCmd.Flags().BoolVar(&dumpCondensed, "condensed", false, "activity timeline output (collapse repeated file tools, hide verbose tool results)")
 	dumpCmd.Flags().BoolVar(&dumpNoHeader, "no-header", false, "skip the session metadata header")
 	dumpCmd.Flags().IntVarP(&dumpTurns, "turns", "t", 0, "show only the last N turns (0 = all)")
 	dumpCmd.Flags().BoolVar(&dumpLast, "last", false, "show only the last turn (shortcut for --turns 1)")
@@ -74,18 +77,19 @@ func printSessionHeader(s *session.Session) {
 	if cost > 0 {
 		costStr = fmt.Sprintf("  cost=$%.4f", cost)
 	}
-	// Replace newlines in task for single-line display.
-	task := strings.ReplaceAll(s.Task, "\n", " ")
-	task = strings.TrimSpace(task)
-	runes := []rune(task)
-	if len(runes) > 80 {
-		task = string(runes[:77]) + "..."
-	}
+	task := truncateRunesASCII(singleLineTrimmed(s.Task), 80)
 	fmt.Printf("═══ %s  %s  %s  %s%s\n", s.ID, s.Label(), statusLabel, age, costStr)
 	fmt.Printf("    %s\n\n", task)
 }
 
 func runDump(_ *cobra.Command, args []string) error {
+	if dumpSummary && dumpCondensed {
+		return fmt.Errorf("--summary and --condensed cannot be used together")
+	}
+	if dumpFollow && dumpCondensed {
+		return fmt.Errorf("--condensed is not supported with --follow")
+	}
+
 	id := args[0]
 	s, err := session.Load(id)
 	if err != nil {
@@ -128,8 +132,11 @@ func runDump(_ *cobra.Command, args []string) error {
 	// Print session header for non-JSON modes.
 	printSessionHeader(s)
 
-	if dumpSummary {
+	if dumpSummary || dumpCondensed {
 		text := renderJSONLogSummary(data)
+		if dumpCondensed {
+			text = renderJSONLogCondensed(data)
+		}
 		if strings.TrimSpace(text) == "" && len(data) > 0 {
 			// Plain text fallback
 			lines := splitLines(data)
@@ -337,23 +344,9 @@ func renderJSONLineForDump(line string) string {
 		}
 		return formatToolResult(result, 200)
 	case "turn_end":
-		// Extract token/cost info
 		msg, _ := event["message"].(map[string]interface{})
-		if msg != nil {
-			usage, _ := msg["usage"].(map[string]interface{})
-			if usage != nil {
-				tokens, _ := usage["totalTokens"].(float64)
-				costInfo, _ := usage["cost"].(map[string]interface{})
-				if tokens > 0 {
-					costStr := ""
-					if costInfo != nil {
-						if total, ok := costInfo["total"].(float64); ok && total > 0 {
-							costStr = fmt.Sprintf(" $%.4f", total)
-						}
-					}
-					return fmt.Sprintf("  [%d tokens%s]\n\n---\n", int(tokens), costStr)
-				}
-			}
+		if tokens, costStr, ok := usageSummary(msg); ok {
+			return fmt.Sprintf("  [%d tokens%s]\n\n---\n", tokens, costStr)
 		}
 		return "\n---\n"
 	}
@@ -445,23 +438,9 @@ func renderJSONLog(data []byte) string {
 				out.WriteString(formatToolResult(result, 200))
 			}
 		case "turn_end":
-			// Extract token/cost info from turn_end message
 			msg, _ := event["message"].(map[string]interface{})
-			if msg != nil {
-				usage, _ := msg["usage"].(map[string]interface{})
-				if usage != nil {
-					tokens, _ := usage["totalTokens"].(float64)
-					costInfo, _ := usage["cost"].(map[string]interface{})
-					if tokens > 0 {
-						costStr := ""
-						if costInfo != nil {
-							if total, ok := costInfo["total"].(float64); ok && total > 0 {
-								costStr = fmt.Sprintf(" $%.4f", total)
-							}
-						}
-						out.WriteString(fmt.Sprintf("  [%d tokens%s]\n", int(tokens), costStr))
-					}
-				}
+			if tokens, costStr, ok := usageSummary(msg); ok {
+				out.WriteString(fmt.Sprintf("  [%d tokens%s]\n", tokens, costStr))
 			}
 			out.WriteString("\n---\n")
 		}
@@ -503,12 +482,7 @@ func renderJSONLogSummary(data []byte) string {
 					if t, _ := cm["type"].(string); t == "text" {
 						text, _ := cm["text"].(string)
 						if text != "" {
-							// Truncate long user messages in summary (rune-safe)
-							r := []rune(text)
-							if len(r) > 200 {
-								text = string(r[:197]) + "..."
-							}
-							out.WriteString(fmt.Sprintf("> %s\n\n", text))
+							out.WriteString(fmt.Sprintf("> %s\n\n", truncateRunesASCII(text, 200)))
 						}
 					}
 				}
@@ -585,23 +559,9 @@ func renderJSONLogSummary(data []byte) string {
 			currentText.Reset()
 
 			turnCount++
-			// Show token/cost info in turn separator
 			msg, _ := event["message"].(map[string]interface{})
-			if msg != nil {
-				usage, _ := msg["usage"].(map[string]interface{})
-				if usage != nil {
-					tokens, _ := usage["totalTokens"].(float64)
-					costInfo, _ := usage["cost"].(map[string]interface{})
-					if tokens > 0 {
-						costStr := ""
-						if costInfo != nil {
-							if total, ok := costInfo["total"].(float64); ok && total > 0 {
-								costStr = fmt.Sprintf(" $%.4f", total)
-							}
-						}
-						out.WriteString(fmt.Sprintf("  [turn %d · %d tokens%s]\n", turnCount, int(tokens), costStr))
-					}
-				}
+			if tokens, costStr, ok := usageSummary(msg); ok {
+				out.WriteString(fmt.Sprintf("  [turn %d · %d tokens%s]\n", turnCount, tokens, costStr))
 			}
 			out.WriteString("---\n")
 		}
@@ -613,6 +573,250 @@ func renderJSONLogSummary(data []byte) string {
 	}
 
 	return out.String()
+}
+
+type condensedActivity struct {
+	text        string
+	collapseKey string
+	count       int
+}
+
+// renderJSONLogCondensed produces a human-friendly activity timeline.
+// Activities collapse across turn boundaries so consecutive edits to the same
+// file are shown as a single line regardless of how many turns they span.
+// Turn cost/token info is aggregated into a footer rather than per-turn lines.
+func renderJSONLogCondensed(data []byte) string {
+	var out strings.Builder
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+
+	var currentText strings.Builder
+	var assistantText strings.Builder
+	var activities []condensedActivity
+	turnCount := 0
+	var totalTokens int
+	var totalCost float64
+
+	appendActivity := func(text, collapseKey string) {
+		if text == "" {
+			return
+		}
+		if collapseKey != "" && len(activities) > 0 {
+			last := &activities[len(activities)-1]
+			if last.collapseKey == collapseKey {
+				last.count++
+				return
+			}
+		}
+		activities = append(activities, condensedActivity{text: text, collapseKey: collapseKey, count: 1})
+	}
+
+	appendAssistantChunk := func(text string) {
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		if assistantText.Len() > 0 {
+			assistantText.WriteString("\n")
+		}
+		assistantText.WriteString(text)
+	}
+
+	flushCurrentText := func(fallback string) {
+		text := strings.TrimSpace(currentText.String())
+		if text == "" {
+			text = strings.TrimSpace(fallback)
+		}
+		currentText.Reset()
+		appendAssistantChunk(text)
+	}
+
+	flushAssistantText := func() {
+		flushCurrentText("")
+		if text := strings.TrimSpace(assistantText.String()); text != "" {
+			// Emit assistant text preserving original line structure.
+			// Wrap each paragraph independently so lists/headings stay intact.
+			paragraphs := strings.Split(text, "\n")
+			first := true
+			for _, para := range paragraphs {
+				para = strings.TrimRight(para, " \t")
+				if para == "" {
+					// Preserve blank lines as empty activity lines.
+					appendActivity("", "")
+					continue
+				}
+				wrapped := wordWrap(para, 100)
+				for _, wl := range wrapped {
+					if first {
+						appendActivity("💬 "+wl, "")
+						first = false
+					} else {
+						appendActivity("  "+wl, "")
+					}
+				}
+			}
+		}
+		assistantText.Reset()
+	}
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		var event map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+
+		eventType, _ := event["type"].(string)
+		switch eventType {
+		case "message_start":
+			msg, _ := event["message"].(map[string]interface{})
+			role, _ := msg["role"].(string)
+			if role == "user" {
+				// Flush any pending assistant text before a new user prompt.
+				flushAssistantText()
+				content, _ := msg["content"].([]interface{})
+				for _, c := range content {
+					cm, _ := c.(map[string]interface{})
+					if t, _ := cm["type"].(string); t == "text" {
+						text, _ := cm["text"].(string)
+						text = singleLineTrimmed(text)
+						if text != "" {
+							out.WriteString(fmt.Sprintf("> %s\n\n", truncateRunesASCII(text, 200)))
+						}
+					}
+				}
+			}
+			if stopReason, _ := msg["stopReason"].(string); stopReason == "error" {
+				appendActivity(strings.TrimSpace(formatAPIError(msg)), "")
+			}
+		case "message_update":
+			ae, _ := event["assistantMessageEvent"].(map[string]interface{})
+			if ae == nil {
+				continue
+			}
+			aeType, _ := ae["type"].(string)
+			switch aeType {
+			case "text_delta":
+				delta, _ := ae["delta"].(string)
+				currentText.WriteString(delta)
+			case "text_start":
+				currentText.Reset()
+			case "text_end":
+				fallback, _ := ae["content"].(string)
+				flushCurrentText(fallback)
+			}
+		case "text_delta":
+			delta, _ := event["delta"].(string)
+			currentText.WriteString(delta)
+		case "text_start":
+			currentText.Reset()
+		case "text_end":
+			fallback, _ := event["content"].(string)
+			flushCurrentText(fallback)
+		case "tool_execution_start":
+			// Flush any assistant text before tool calls so prose appears
+			// before the tools it precedes, not after.
+			flushAssistantText()
+			toolName, _ := event["toolName"].(string)
+			args, _ := event["args"].(map[string]interface{})
+			text, collapseKey := formatCondensedToolActivity(toolName, args)
+			appendActivity(text, collapseKey)
+		case "tool_execution_end":
+			isError, _ := event["isError"].(bool)
+			result, _ := event["result"].(map[string]interface{})
+			if errText := condensedToolErrorText(result, isError); errText != "" {
+				appendActivity("⚠ "+truncateRunesASCII(singleLineTrimmed(errText), 150), "")
+			}
+		case "turn_end":
+			turnCount++
+			msg, _ := event["message"].(map[string]interface{})
+			if tokens, costStr, ok := usageSummary(msg); ok {
+				totalTokens += tokens
+				_ = costStr
+				// Parse cost from the formatted string.
+				if costVal, _ := extractCostFromUsage(msg); costVal > 0 {
+					totalCost += costVal
+				}
+			}
+		}
+	}
+
+	// Flush remaining text/activities.
+	flushAssistantText()
+
+	// Emit all activities.
+	for _, activity := range activities {
+		line := activity.text
+		if activity.count > 1 {
+			line += fmt.Sprintf(" (×%d)", activity.count)
+		}
+		out.WriteString("  " + line + "\n")
+	}
+
+	// Footer with aggregate stats.
+	if turnCount > 0 {
+		if out.Len() > 0 {
+			out.WriteString("\n")
+		}
+		if totalCost > 0 {
+			out.WriteString(fmt.Sprintf("  [%d turns · %d tokens · $%.4f]\n", turnCount, totalTokens, totalCost))
+		} else if totalTokens > 0 {
+			out.WriteString(fmt.Sprintf("  [%d turns · %d tokens]\n", turnCount, totalTokens))
+		} else {
+			out.WriteString(fmt.Sprintf("  [%d turns]\n", turnCount))
+		}
+	}
+
+	return out.String()
+}
+
+func formatCondensedToolActivity(toolName string, args map[string]interface{}) (string, string) {
+	formatted := strings.TrimPrefix(formatToolCall(toolName, args, 100), "🔧 ")
+
+	switch toolName {
+	case "bash":
+		if strings.HasPrefix(formatted, "bash: ") {
+			return "$ " + strings.TrimPrefix(formatted, "bash: "), ""
+		}
+		return "$ bash", ""
+	case "read", "write", "edit":
+		if p, ok := args["path"].(string); ok && p != "" {
+			return fmt.Sprintf("%s %s", toolName, p), toolName + ":" + p
+		}
+	}
+
+	return formatted, ""
+}
+
+func condensedToolErrorText(result map[string]interface{}, isError bool) string {
+	if !isError {
+		return ""
+	}
+	text := strings.TrimSpace(toolResultText(result))
+	if text == "" {
+		return "error"
+	}
+	return text
+}
+
+func toolResultText(result map[string]interface{}) string {
+	if result == nil {
+		return ""
+	}
+	content, _ := result["content"].([]interface{})
+	for _, c := range content {
+		cm, _ := c.(map[string]interface{})
+		if t, _ := cm["type"].(string); t == "text" {
+			text, _ := cm["text"].(string)
+			if text != "" {
+				return text
+			}
+		}
+	}
+	return ""
 }
 
 // filterLastNTurns returns the NDJSON data for only the last N turns.
@@ -670,11 +874,7 @@ func formatAPIError(msg map[string]interface{}) string {
 			}
 		}
 	}
-	r := []rune(errMsg)
-	if len(r) > 500 {
-		errMsg = string(r[:497]) + "..."
-	}
-	return fmt.Sprintf("❌ %s\n", errMsg)
+	return fmt.Sprintf("❌ %s\n", truncateRunesASCII(errMsg, 500))
 }
 
 // formatToolCall formats a tool_execution_start event into a display string.
@@ -684,12 +884,7 @@ func formatToolCall(toolName string, args map[string]interface{}, maxCmdLen int)
 	switch toolName {
 	case "bash":
 		if cmd, ok := args["command"].(string); ok {
-			cmd = strings.ReplaceAll(cmd, "\n", " ")
-			r := []rune(cmd)
-			if len(r) > maxCmdLen {
-				cmd = string(r[:maxCmdLen-3]) + "..."
-			}
-			msg += ": " + cmd
+			msg += ": " + truncateRunesASCII(strings.ReplaceAll(cmd, "\n", " "), maxCmdLen)
 		}
 	case "read", "write":
 		if p, ok := args["path"].(string); ok {
@@ -716,11 +911,7 @@ func formatToolCall(toolName string, args map[string]interface{}, maxCmdLen int)
 		}
 	case "AskUserQuestion":
 		if q, ok := args["question"].(string); ok {
-			r := []rune(q)
-			if len(r) > maxCmdLen {
-				q = string(r[:maxCmdLen-3]) + "..."
-			}
-			msg += ": " + q
+			msg += ": " + truncateRunesASCII(q, maxCmdLen)
 		}
 	}
 	return msg
@@ -729,24 +920,11 @@ func formatToolCall(toolName string, args map[string]interface{}, maxCmdLen int)
 // formatToolResult formats the result text from a tool_execution_end event.
 // maxLen controls the truncation limit for the result text (in runes).
 func formatToolResult(result map[string]interface{}, maxLen int) string {
-	if result == nil {
+	text := toolResultText(result)
+	if text == "" {
 		return ""
 	}
-	content, _ := result["content"].([]interface{})
-	for _, c := range content {
-		cm, _ := c.(map[string]interface{})
-		if t, _ := cm["type"].(string); t == "text" {
-			text, _ := cm["text"].(string)
-			if text != "" {
-				r := []rune(text)
-				if len(r) > maxLen {
-					text = string(r[:maxLen-3]) + "..."
-				}
-				return fmt.Sprintf("→ %s\n", text)
-			}
-		}
-	}
-	return ""
+	return fmt.Sprintf("→ %s\n", truncateRunesASCII(text, maxLen))
 }
 
 func splitLines(data []byte) []string {

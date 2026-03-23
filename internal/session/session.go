@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -61,7 +62,7 @@ func Save(s *Session) error {
 	if err != nil {
 		return err
 	}
-	final := filepath.Join(dir, "sessions", s.ID+".json")
+	final := sessionFilePath(dir, s.ID)
 	tmp := final + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
@@ -78,7 +79,7 @@ func Load(id string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "sessions", id+".json"))
+	data, err := os.ReadFile(sessionFilePath(dir, id))
 	if err != nil {
 		return nil, err
 	}
@@ -107,8 +108,7 @@ func List() ([]*Session, error) {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
-		id := e.Name()[:len(e.Name())-5]
-		s, err := Load(id)
+		s, err := Load(strings.TrimSuffix(e.Name(), ".json"))
 		if err != nil {
 			continue
 		}
@@ -122,5 +122,9 @@ func Remove(id string) error {
 	if err != nil {
 		return err
 	}
-	return os.Remove(filepath.Join(dir, "sessions", id+".json"))
+	return os.Remove(sessionFilePath(dir, id))
+}
+
+func sessionFilePath(dir, id string) string {
+	return filepath.Join(dir, "sessions", id+".json")
 }

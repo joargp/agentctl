@@ -227,23 +227,14 @@ func emitProgressLine(line *tail.Line, s *session.Session, opts watcherNotifyOpt
 
 func truncateTask(task string, maxLen int) string {
 	task = strings.TrimSpace(task)
-	// Take only the first line for display purposes
 	if idx := strings.IndexAny(task, "\n\r"); idx >= 0 {
 		task = task[:idx]
 	}
-	r := []rune(task)
-	if len(r) > maxLen {
-		return string(r[:maxLen-3]) + "..."
-	}
-	return task
+	return truncateRunesASCII(task, maxLen)
 }
 
 func completionMessage(s *session.Session) string {
-	task := s.Task
-	taskRunes := []rune(task)
-	if len(taskRunes) > 80 {
-		task = string(taskRunes[:77]) + "..."
-	}
+	task := truncateRunesASCII(s.Task, 80)
 
 	msg := fmt.Sprintf(
 		"Agent **%s** (`%s`) finished.\nTask: %s\n",

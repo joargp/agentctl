@@ -132,7 +132,7 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 		return Activity{State: "writing"}
 	case "turn_start":
 		if turnCount != nil {
-			*turnCount = *turnCount + 1
+			(*turnCount)++
 		}
 		return Activity{}
 	case "turn_end":

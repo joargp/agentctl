@@ -106,8 +106,10 @@ func runRun(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	home, _ := os.UserHomeDir()
-	dataDir := filepath.Join(home, ".local", "share", "agentctl")
+	dataDir, err := session.DataDir()
+	if err != nil {
+		return err
+	}
 	logFile := filepath.Join(dataDir, "logs", id+".log")
 	taskFile := filepath.Join(dataDir, "scripts", id+".task")
 	scriptFile := filepath.Join(dataDir, "scripts", id+".sh")

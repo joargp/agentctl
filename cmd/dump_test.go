@@ -102,6 +102,30 @@ func TestRenderJSONLogTurnEndWithUsage(t *testing.T) {
 	}
 }
 
+func TestExtractCostFromUsage(t *testing.T) {
+	msg := map[string]interface{}{
+		"usage": map[string]interface{}{
+			"cost": map[string]interface{}{"total": 0.015},
+		},
+	}
+	cost, err := extractCostFromUsage(msg)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if cost != 0.015 {
+		t.Fatalf("expected 0.015, got %v", cost)
+	}
+}
+
+func TestExtractCostFromUsageMissingCost(t *testing.T) {
+	msg := map[string]interface{}{
+		"usage": map[string]interface{}{},
+	}
+	if _, err := extractCostFromUsage(msg); err == nil {
+		t.Fatal("expected error for missing cost")
+	}
+}
+
 func TestRenderJSONLogPlainTextFallback(t *testing.T) {
 	// Plain text (non-JSON) should produce empty rendered output,
 	// triggering the fallback path in runDump.
@@ -189,6 +213,123 @@ func TestRenderJSONLogSummaryToolResultTruncationAt500(t *testing.T) {
 	// Should be truncated at 500 chars, not 200
 	if len(result) < 400 {
 		t.Fatalf("expected longer tool result in summary (500 char limit), got len=%d", len(result))
+	}
+}
+
+func TestRenderJSONLogCondensedBuildsActivityTimeline(t *testing.T) {
+	input := `{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"Review the codebase and clean up dead code"}]}}
+{"type":"tool_execution_start","toolCallId":"1","toolName":"edit","args":{"path":"internal/tmux/tmux.go"}}
+{"type":"tool_execution_end","toolCallId":"1","toolName":"edit","result":{"content":[{"type":"text","text":"Successfully replaced text in tmux.go"}]},"isError":false}
+{"type":"tool_execution_start","toolCallId":"2","toolName":"edit","args":{"path":"internal/tmux/tmux.go"}}
+{"type":"tool_execution_end","toolCallId":"2","toolName":"edit","result":{"content":[{"type":"text","text":"Successfully replaced text in tmux.go"}]},"isError":false}
+{"type":"tool_execution_start","toolCallId":"3","toolName":"edit","args":{"path":"internal/tmux/tmux.go"}}
+{"type":"tool_execution_end","toolCallId":"3","toolName":"edit","result":{"content":[{"type":"text","text":"Successfully replaced text in tmux.go"}]},"isError":false}
+{"type":"tool_execution_start","toolCallId":"4","toolName":"edit","args":{"path":"internal/notify/notify.go"}}
+{"type":"tool_execution_end","toolCallId":"4","toolName":"edit","result":{"content":[{"type":"text","text":"Successfully replaced text in notify.go"}]},"isError":false}
+{"type":"tool_execution_start","toolCallId":"5","toolName":"edit","args":{"path":"internal/notify/notify.go"}}
+{"type":"tool_execution_end","toolCallId":"5","toolName":"edit","result":{"content":[{"type":"text","text":"Successfully replaced text in notify.go"}]},"isError":false}
+{"type":"tool_execution_start","toolCallId":"6","toolName":"bash","args":{"command":"go build ./..."}}
+{"type":"tool_execution_end","toolCallId":"6","toolName":"bash","result":{"content":[{"type":"text","text":""}]},"isError":false}
+{"type":"tool_execution_start","toolCallId":"7","toolName":"bash","args":{"command":"go test ./... -count=1"}}
+{"type":"tool_execution_end","toolCallId":"7","toolName":"bash","result":{"content":[{"type":"text","text":"ok"}]},"isError":false}
+{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":1}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"Here is a summary of the changes I made: Removed dead code from tmux.go. Cleaned up notify.go error handling."}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":1,"content":"Here is a summary of the changes I made: Removed dead code from tmux.go. Cleaned up notify.go error handling."}}
+{"type":"turn_end","message":{"role":"assistant","usage":{"totalTokens":62500,"cost":{"total":0.12}}}}
+`
+	result := renderJSONLogCondensed([]byte(input))
+	if !strings.Contains(result, "> Review the codebase and clean up dead code") {
+		t.Fatalf("expected user prompt, got %q", result)
+	}
+	if !strings.Contains(result, "  edit internal/tmux/tmux.go (×3)") {
+		t.Fatalf("expected collapsed tmux.go edits, got %q", result)
+	}
+	if !strings.Contains(result, "  edit internal/notify/notify.go (×2)") {
+		t.Fatalf("expected collapsed notify.go edits, got %q", result)
+	}
+	if !strings.Contains(result, "  $ go build ./...") || !strings.Contains(result, "  $ go test ./... -count=1") {
+		t.Fatalf("expected bash commands in condensed output, got %q", result)
+	}
+	if !strings.Contains(result, "💬 Here is a summary of the changes I made") {
+		t.Fatalf("expected assistant summary text, got %q", result)
+	}
+	if strings.Contains(result, "→ Successfully replaced text") {
+		t.Fatalf("expected tool results to be hidden, got %q", result)
+	}
+	if !strings.Contains(result, "[1 turns · 62500 tokens · $0.1200]") {
+		t.Fatalf("expected aggregate footer, got %q", result)
+	}
+	if strings.Contains(result, "[turn 1") || strings.Contains(result, "---") {
+		t.Fatalf("expected no per-turn markers in condensed output, got %q", result)
+	}
+}
+
+func TestRenderJSONLogCondensedCollapsesAcrossTurns(t *testing.T) {
+	input := `{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"Update the file twice"}]}}
+{"type":"tool_execution_start","toolCallId":"1","toolName":"edit","args":{"path":"file.go"}}
+{"type":"tool_execution_end","toolCallId":"1","toolName":"edit","result":{"content":[{"type":"text","text":"done"}]},"isError":false}
+{"type":"turn_end","message":{"role":"assistant","usage":{"totalTokens":100,"cost":{"total":0.0100}}}}
+{"type":"tool_execution_start","toolCallId":"2","toolName":"edit","args":{"path":"file.go"}}
+{"type":"tool_execution_end","toolCallId":"2","toolName":"edit","result":{"content":[{"type":"text","text":"done"}]},"isError":false}
+{"type":"message_update","assistantMessageEvent":{"type":"text_start","contentIndex":1}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"Done"}}
+{"type":"message_update","assistantMessageEvent":{"type":"text_end","contentIndex":1,"content":"Done"}}
+{"type":"turn_end","message":{"role":"assistant","usage":{"totalTokens":200,"cost":{"total":0.0200}}}}
+`
+	result := renderJSONLogCondensed([]byte(input))
+	if strings.Count(result, "edit file.go") != 1 {
+		t.Fatalf("expected one collapsed edit line across turns, got %q", result)
+	}
+	if !strings.Contains(result, "  edit file.go (×2)") {
+		t.Fatalf("expected collapsed edit count across turns, got %q", result)
+	}
+	if !strings.Contains(result, "💬 Done") {
+		t.Fatalf("expected assistant text, got %q", result)
+	}
+	if !strings.Contains(result, "[2 turns · 300 tokens · $0.0300]") {
+		t.Fatalf("expected aggregate multi-turn footer, got %q", result)
+	}
+}
+
+func TestRenderJSONLogCondensedShowsWarningsOnlyForActualToolErrors(t *testing.T) {
+	input := `{"type":"tool_execution_start","toolCallId":"1","toolName":"read","args":{"path":"missing.txt"}}
+{"type":"tool_execution_end","toolCallId":"1","toolName":"read","result":{"content":[{"type":"text","text":"the word error appears in this file\nENOENT is mentioned in docs\n"}]},"isError":false}
+{"type":"tool_execution_start","toolCallId":"2","toolName":"bash","args":{"command":"go test ./..."}}
+{"type":"tool_execution_end","toolCallId":"2","toolName":"bash","result":{"content":[{"type":"text","text":"permission denied"}]},"isError":true}
+`
+	result := renderJSONLogCondensed([]byte(input))
+	if strings.Contains(result, "ENOENT") || strings.Contains(result, "the word error appears") {
+		t.Fatalf("expected successful tool output to stay hidden even if it contains error-like text, got %q", result)
+	}
+	if !strings.Contains(result, "⚠ permission denied") {
+		t.Fatalf("expected warning for actual tool error, got %q", result)
+	}
+	if strings.Contains(result, "→ permission denied") {
+		t.Fatalf("expected condensed mode to show warning, not raw tool result, got %q", result)
+	}
+}
+
+func TestRenderJSONLogCondensedHidesThinkingAndUsesAggregateFooter(t *testing.T) {
+	input := `{"type":"message_update","assistantMessageEvent":{"type":"thinking_start","contentIndex":0}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","contentIndex":0,"delta":"Let me think"}}
+{"type":"message_update","assistantMessageEvent":{"type":"thinking_end","contentIndex":0,"content":"Let me think"}}
+{"type":"text_start","contentIndex":1}
+{"type":"text_delta","contentIndex":1,"delta":"Done"}
+{"type":"text_end","contentIndex":1,"content":"Done"}
+{"type":"turn_end","message":{"role":"assistant","usage":{"totalTokens":42,"cost":{"total":0.001}}}}
+`
+	result := renderJSONLogCondensed([]byte(input))
+	if strings.Contains(result, "thinking") {
+		t.Fatalf("expected thinking indicator to be hidden, got %q", result)
+	}
+	if !strings.Contains(result, "💬 Done") {
+		t.Fatalf("expected assistant text, got %q", result)
+	}
+	if !strings.Contains(result, "[1 turns · 42 tokens · $0.0010]") {
+		t.Fatalf("expected aggregate footer, got %q", result)
+	}
+	if strings.Contains(result, "---") || strings.Contains(result, "[turn 1") {
+		t.Fatalf("expected no turn separators or turn markers, got %q", result)
 	}
 }
 

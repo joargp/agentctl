@@ -82,7 +82,7 @@ func SendFollowUp(sessionID, message string) error {
 	// Read the response before closing so the server doesn't get EPIPE
 	// trying to write its acknowledgement to an already-closed socket.
 	buf := make([]byte, 4096)
-	conn.Read(buf) // response is informational; ignore errors
+	_, _ = conn.Read(buf) // response is informational; ignore errors
 	return nil
 }
 
@@ -147,17 +147,14 @@ func WriteProgressEvent(dir string, event ProgressEvent) error {
 		Text:       event.Text,
 		Replace:    event.Replace,
 	}
-	if event.Model != "" {
-		if payload.Metadata == nil {
-			payload.Metadata = make(map[string]string)
+	if event.Model != "" || event.Task != "" {
+		payload.Metadata = make(map[string]string)
+		if event.Model != "" {
+			payload.Metadata["model"] = event.Model
 		}
-		payload.Metadata["model"] = event.Model
-	}
-	if event.Task != "" {
-		if payload.Metadata == nil {
-			payload.Metadata = make(map[string]string)
+		if event.Task != "" {
+			payload.Metadata["task"] = event.Task
 		}
-		payload.Metadata["task"] = event.Task
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -217,17 +214,6 @@ func writeEventFile(dir, base string, data []byte) error {
 		return fmt.Errorf("rename event file: %w", err)
 	}
 	return nil
-}
-
-// SocketExists reports whether the control socket for sessionID exists and is
-// accepting connections.
-func SocketExists(sessionID string) bool {
-	conn, err := net.DialTimeout("unix", socketPath(sessionID), 300*time.Millisecond)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
 }
 
 func socketPath(sessionID string) string {

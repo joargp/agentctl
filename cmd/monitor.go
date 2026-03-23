@@ -115,16 +115,27 @@ func runMonitor(_ *cobra.Command, args []string) error {
 			}
 
 			flush := func() {
-				if buf.Len() > 0 {
-					s := buf.String()
-					buf.Reset()
-					for _, ln := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
-						if ln != "" {
-							if inThinking {
-								ln = "💭 " + ln
-							}
-							out <- line{label: label, text: ln}
-						}
+				if buf.Len() == 0 {
+					return
+				}
+				s := buf.String()
+				buf.Reset()
+				for _, ln := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+					if ln == "" {
+						continue
+					}
+					if inThinking {
+						ln = "💭 " + ln
+					}
+					out <- line{label: label, text: ln}
+				}
+			}
+
+			stopFlushTimer := func() {
+				if !flushTimer.Stop() {
+					select {
+					case <-flushTimer.C:
+					default:
 					}
 				}
 			}
@@ -166,12 +177,7 @@ func runMonitor(_ *cobra.Command, args []string) error {
 							flushTimer.Reset(150 * time.Millisecond)
 						}
 					} else {
-						if !flushTimer.Stop() {
-							select {
-							case <-flushTimer.C:
-							default:
-							}
-						}
+						stopFlushTimer()
 						flush()
 						if other != "" {
 							out <- line{label: label, text: other}
@@ -180,12 +186,7 @@ func runMonitor(_ *cobra.Command, args []string) error {
 				case <-flushTimer.C:
 					flush()
 				case <-done:
-					if !flushTimer.Stop() {
-						select {
-						case <-flushTimer.C:
-						default:
-						}
-					}
+					stopFlushTimer()
 					flush()
 					return
 				}
@@ -307,23 +308,9 @@ func renderJSONLine(line string) string {
 		}
 		return ""
 	case "turn_end":
-		// Extract token/cost info
 		msg, _ := event["message"].(map[string]interface{})
-		if msg != nil {
-			usage, _ := msg["usage"].(map[string]interface{})
-			if usage != nil {
-				tokens, _ := usage["totalTokens"].(float64)
-				costInfo, _ := usage["cost"].(map[string]interface{})
-				if tokens > 0 {
-					costStr := ""
-					if costInfo != nil {
-						if total, ok := costInfo["total"].(float64); ok && total > 0 {
-							costStr = fmt.Sprintf(" $%.4f", total)
-						}
-					}
-					return fmt.Sprintf("[%d tokens%s] ---", int(tokens), costStr)
-				}
-			}
+		if tokens, costStr, ok := usageSummary(msg); ok {
+			return fmt.Sprintf("[%d tokens%s] ---", tokens, costStr)
 		}
 		return "---"
 	}

@@ -99,23 +99,8 @@ func runLs(_ *cobra.Command, _ []string) error {
 	}
 
 	for _, s := range sessions {
-		if lsModel != "" && !strings.Contains(s.Model, lsModel) {
-			continue
-		}
-		if lsTask != "" && !strings.Contains(strings.ToLower(s.Task), strings.ToLower(lsTask)) {
-			continue
-		}
-		if lsCwd != "" && !strings.Contains(s.Cwd, lsCwd) {
-			continue
-		}
-		if sinceFilter > 0 && time.Since(s.StartedAt) > sinceFilter {
-			continue
-		}
 		running := tmux.SessionExists(s.TmuxSession)
-		if lsRunning && !running {
-			continue
-		}
-		if lsDone && running {
+		if !includeLsSession(s, running, sinceFilter) {
 			continue
 		}
 		status := "done"
@@ -131,12 +116,7 @@ func runLs(_ *cobra.Command, _ []string) error {
 			}
 		}
 		age := time.Since(s.StartedAt).Round(time.Second)
-		task := strings.ReplaceAll(s.Task, "\n", " ")
-		task = strings.TrimSpace(task)
-		taskRunes := []rune(task)
-		if len(taskRunes) > 50 {
-			task = string(taskRunes[:47]) + "..."
-		}
+		task := truncateRunesASCII(singleLineTrimmed(s.Task), 50)
 		stats := getSessionLogStats(s, running)
 		costStr := ""
 		if stats.TotalCost > 0 {
@@ -157,28 +137,35 @@ func runLs(_ *cobra.Command, _ []string) error {
 
 func runLsQuiet(sessions []*session.Session, sinceFilter time.Duration) error {
 	for _, s := range sessions {
-		if lsModel != "" && !strings.Contains(s.Model, lsModel) {
-			continue
-		}
-		if lsTask != "" && !strings.Contains(strings.ToLower(s.Task), strings.ToLower(lsTask)) {
-			continue
-		}
-		if lsCwd != "" && !strings.Contains(s.Cwd, lsCwd) {
-			continue
-		}
-		if sinceFilter > 0 && time.Since(s.StartedAt) > sinceFilter {
-			continue
-		}
 		running := tmux.SessionExists(s.TmuxSession)
-		if lsRunning && !running {
-			continue
-		}
-		if lsDone && running {
+		if !includeLsSession(s, running, sinceFilter) {
 			continue
 		}
 		fmt.Println(s.ID)
 	}
 	return nil
+}
+
+func includeLsSession(s *session.Session, running bool, sinceFilter time.Duration) bool {
+	if lsModel != "" && !strings.Contains(s.Model, lsModel) {
+		return false
+	}
+	if lsTask != "" && !strings.Contains(strings.ToLower(s.Task), strings.ToLower(lsTask)) {
+		return false
+	}
+	if lsCwd != "" && !strings.Contains(s.Cwd, lsCwd) {
+		return false
+	}
+	if sinceFilter > 0 && time.Since(s.StartedAt) > sinceFilter {
+		return false
+	}
+	if lsRunning && !running {
+		return false
+	}
+	if lsDone && running {
+		return false
+	}
+	return true
 }
 
 // readTail reads the last n bytes of a file. Returns nil on error.

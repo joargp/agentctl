@@ -10,14 +10,14 @@ type DeltaKey struct {
 	ContentIndex float64
 }
 
-// BatchableDeltaTypes lists the assistantMessageEvent sub-types whose consecutive
+// batchableDeltaTypes lists the assistantMessageEvent sub-types whose consecutive
 // runs are merged into a single log event.
 //
 // Only toolcall_delta is batched — it is not rendered live by dump/monitor
 // (tool args are streamed as JSON fragments, only shown when complete via
 // tool_execution_start). Batching text_delta and thinking_delta would delay
 // live output visibility in dump --follow and monitor.
-var BatchableDeltaTypes = map[string]bool{
+var batchableDeltaTypes = map[string]bool{
 	"toolcall_delta": true,
 }
 
@@ -33,7 +33,7 @@ func ParseBatchableDelta(line []byte) (DeltaKey, string, map[string]interface{},
 	eventType, _ := event["type"].(string)
 	if eventType != "message_update" {
 		// Check for top-level delta events (OpenAI models).
-		if BatchableDeltaTypes[eventType] {
+		if batchableDeltaTypes[eventType] {
 			delta, _ := event["delta"].(string)
 			ci, _ := event["contentIndex"].(float64)
 			key := DeltaKey{AeType: eventType, ContentIndex: ci}
@@ -48,7 +48,7 @@ func ParseBatchableDelta(line []byte) (DeltaKey, string, map[string]interface{},
 	}
 
 	aeType, _ := ae["type"].(string)
-	if !BatchableDeltaTypes[aeType] {
+	if !batchableDeltaTypes[aeType] {
 		return DeltaKey{}, "", nil, false
 	}
 

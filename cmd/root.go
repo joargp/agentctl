@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/joargp/agentctl/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -29,11 +30,10 @@ func ensureDirs() error {
 		return fmt.Errorf("create socket dir: %w", err)
 	}
 	// data subdirs
-	home, err := os.UserHomeDir()
+	base, err := session.DataDir()
 	if err != nil {
 		return err
 	}
-	base := filepath.Join(home, ".local", "share", "agentctl")
 	for _, sub := range []string{"sessions", "logs", "scripts"} {
 		if err := os.MkdirAll(filepath.Join(base, sub), 0o755); err != nil {
 			return fmt.Errorf("create data dir %s: %w", sub, err)
