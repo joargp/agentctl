@@ -12,12 +12,15 @@ import (
 
 // ANSI escape sequences for Pi-like terminal styling.
 const (
-	reset = "\033[0m"
-	bold  = "\033[1m"
-	dim   = "\033[2m"
+	reset     = "\033[0m"
+	bold      = "\033[1m"
+	dim       = "\033[2m"
+	italic    = "\033[3m"
+	underline = "\033[4m"
 
 	// Foreground colors
 	fgRed    = "\033[31m"
+	fgGreen  = "\033[32m"
 	fgYellow = "\033[33m"
 	fgBlue   = "\033[34m"
 	fgCyan   = "\033[36m"
@@ -353,18 +356,19 @@ func (r *StreamRenderer) writeAssistantText(text string) {
 
 // handleAssistantLine processes a single complete line of assistant text.
 // Detects and renders markdown elements: tables, code blocks, headers,
-// horizontal rules, and inline formatting (bold, code).
+// horizontal rules, blockquotes, bullet lists, and inline formatting.
 func (r *StreamRenderer) handleAssistantLine(line string) {
 	// Code block fences toggle the code block state.
-	if isFence, _ := isCodeFence(line); isFence {
+	if isFence, lang := isCodeFence(line); isFence {
 		r.flushTable()
 		if r.inCodeBlock {
 			// Closing fence — end code block.
 			r.inCodeBlock = false
 			return
 		}
-		// Opening fence — start code block.
+		// Opening fence — start code block, show language label.
 		r.inCodeBlock = true
+		r.renderCodeFenceOpen(lang)
 		return
 	}
 
@@ -392,9 +396,19 @@ func (r *StreamRenderer) handleAssistantLine(line string) {
 
 	// ATX headers.
 	if level, text := parseATXHeader(line); level > 0 {
-		styled := r.renderInlineMarkdown(text)
-		r.writeStyled(bold, styled)
-		fmt.Fprint(r.w, "\n")
+		r.renderHeader(level, text)
+		return
+	}
+
+	// Blockquotes.
+	if isQuote, text := parseBlockquote(line); isQuote {
+		r.renderBlockquote(text)
+		return
+	}
+
+	// Bullet list items.
+	if isBullet, indent, text := parseBulletItem(line); isBullet {
+		r.renderBulletItem(indent, text)
 		return
 	}
 
