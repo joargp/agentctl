@@ -44,6 +44,8 @@ type StreamRenderer struct {
 	toolName       string    // name of the currently executing tool
 	toolStartTime  time.Time // when the current tool started
 	needsNewline   bool      // true if assistant text was written without a trailing newline
+	lineBuf        string    // partial line buffer for assistant text (incomplete line)
+	tableRows      []string  // accumulated markdown table rows for box rendering
 }
 
 type renderState int
@@ -185,11 +187,8 @@ func (r *StreamRenderer) renderTextStart() {
 }
 
 func (r *StreamRenderer) renderToolStart(event map[string]interface{}) {
-	// Ensure assistant text ends with a newline before tool output.
-	if r.needsNewline {
-		fmt.Fprint(r.w, "\n")
-		r.needsNewline = false
-	}
+	// Flush any buffered assistant text (tables, partial lines) before tool output.
+	r.flushAssistantText()
 
 	toolName, _ := event["toolName"].(string)
 	args, _ := event["args"].(map[string]interface{})
@@ -296,10 +295,7 @@ func (r *StreamRenderer) renderTruncatedLines(lines []string) {
 }
 
 func (r *StreamRenderer) renderTurnEnd(event map[string]interface{}) {
-	if r.needsNewline {
-		fmt.Fprint(r.w, "\n")
-		r.needsNewline = false
-	}
+	r.flushAssistantText()
 
 	msg, _ := event["message"].(map[string]interface{})
 	tokens, costStr, hasSummary := usageSummary(msg)
@@ -340,10 +336,51 @@ func (r *StreamRenderer) writeUserPrompt(text string) {
 
 func (r *StreamRenderer) writeAssistantText(text string) {
 	r.state = stateWriting
-	// Ensure a blank line before assistant text after tool output or turn boundary.
-	// Stream text with leading space indent to match Pi TUI's layout.
-	fmt.Fprint(r.w, text)
-	r.needsNewline = len(text) > 0 && text[len(text)-1] != '\n'
+	// Buffer text line-by-line to detect markdown tables for box rendering.
+	r.lineBuf += text
+	for {
+		idx := strings.IndexByte(r.lineBuf, '\n')
+		if idx < 0 {
+			break // no complete line yet
+		}
+		line := r.lineBuf[:idx]
+		r.lineBuf = r.lineBuf[idx+1:]
+		r.handleAssistantLine(line)
+	}
+	r.needsNewline = len(r.lineBuf) > 0
+}
+
+// handleAssistantLine processes a single complete line of assistant text.
+// It detects markdown table rows and buffers them for box-drawing rendering.
+func (r *StreamRenderer) handleAssistantLine(line string) {
+	if isTableRow(line) {
+		r.tableRows = append(r.tableRows, line)
+		return
+	}
+	// Not a table row — flush any buffered table first, then emit the line.
+	r.flushTable()
+	fmt.Fprint(r.w, line+"\n")
+}
+
+// flushTable renders any buffered markdown table rows as a box-drawing table.
+func (r *StreamRenderer) flushTable() {
+	if len(r.tableRows) == 0 {
+		return
+	}
+	rendered := renderBoxTable(r.tableRows)
+	r.tableRows = nil
+	fmt.Fprint(r.w, rendered)
+}
+
+// flushAssistantText outputs any remaining buffered text and table rows.
+// Called at turn boundaries and before tool calls.
+func (r *StreamRenderer) flushAssistantText() {
+	r.flushTable()
+	if r.lineBuf != "" {
+		fmt.Fprint(r.w, r.lineBuf)
+		r.lineBuf = ""
+	}
+	r.needsNewline = false
 }
 
 func (r *StreamRenderer) writeToolCall(name string, args map[string]interface{}) {

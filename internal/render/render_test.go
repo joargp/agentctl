@@ -31,7 +31,9 @@ func TestRenderTextDelta(t *testing.T) {
 
 	r.RenderLine([]byte(`{"type":"text_start"}`))
 	r.RenderLine([]byte(`{"type":"text_delta","delta":"Hello "}`))
-	r.RenderLine([]byte(`{"type":"text_delta","delta":"world"}`))
+	r.RenderLine([]byte(`{"type":"text_delta","delta":"world\n"}`))
+	r.RenderLine([]byte(`{"type":"turn_start"}`))
+	r.RenderLine([]byte(`{"type":"turn_end","message":{}}`))
 
 	out := buf.String()
 	if !strings.Contains(out, "Hello world") {
@@ -43,7 +45,9 @@ func TestRenderNestedTextDelta(t *testing.T) {
 	var buf bytes.Buffer
 	r := New(&buf, WithNoColor())
 
-	r.RenderLine([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"nested text"}}`))
+	r.RenderLine([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"nested text\n"}}`))
+	r.RenderLine([]byte(`{"type":"turn_start"}`))
+	r.RenderLine([]byte(`{"type":"turn_end","message":{}}`))
 
 	out := buf.String()
 	if !strings.Contains(out, "nested text") {
@@ -206,7 +210,9 @@ func TestRenderThinkingToText(t *testing.T) {
 	r.RenderLine([]byte(`{"type":"thinking_delta","delta":"internal reasoning"}`))
 	r.RenderLine([]byte(`{"type":"thinking_end"}`))
 	r.RenderLine([]byte(`{"type":"text_start"}`))
-	r.RenderLine([]byte(`{"type":"text_delta","delta":"After thinking"}`))
+	r.RenderLine([]byte(`{"type":"text_delta","delta":"After thinking\n"}`))
+	r.RenderLine([]byte(`{"type":"turn_start"}`))
+	r.RenderLine([]byte(`{"type":"turn_end","message":{}}`))
 
 	out := buf.String()
 	if strings.Contains(out, "internal reasoning") {
