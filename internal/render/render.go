@@ -46,6 +46,7 @@ type StreamRenderer struct {
 	needsNewline   bool      // true if assistant text was written without a trailing newline
 	lineBuf        string    // partial line buffer for assistant text (incomplete line)
 	tableRows      []string  // accumulated markdown table rows for box rendering
+	inCodeBlock    bool      // true when inside a fenced code block
 }
 
 type renderState int
@@ -351,15 +352,54 @@ func (r *StreamRenderer) writeAssistantText(text string) {
 }
 
 // handleAssistantLine processes a single complete line of assistant text.
-// It detects markdown table rows and buffers them for box-drawing rendering.
+// Detects and renders markdown elements: tables, code blocks, headers,
+// horizontal rules, and inline formatting (bold, code).
 func (r *StreamRenderer) handleAssistantLine(line string) {
+	// Code block fences toggle the code block state.
+	if isFence, _ := isCodeFence(line); isFence {
+		r.flushTable()
+		if r.inCodeBlock {
+			// Closing fence — end code block.
+			r.inCodeBlock = false
+			return
+		}
+		// Opening fence — start code block.
+		r.inCodeBlock = true
+		return
+	}
+
+	// Inside code blocks: render with indentation and dim styling.
+	if r.inCodeBlock {
+		r.flushTable()
+		r.writeStyled(dim, "    "+line+"\n")
+		return
+	}
+
+	// Markdown table rows get buffered for box-drawing rendering.
 	if isTableRow(line) {
 		r.tableRows = append(r.tableRows, line)
 		return
 	}
-	// Not a table row — flush any buffered table first, then emit the line.
+
+	// Not a table row — flush any buffered table first.
 	r.flushTable()
-	fmt.Fprint(r.w, line+"\n")
+
+	// Horizontal rules.
+	if isHorizontalRule(line) {
+		r.writeStyled(dim, strings.Repeat("─", hrWidth)+"\n")
+		return
+	}
+
+	// ATX headers.
+	if level, text := parseATXHeader(line); level > 0 {
+		styled := r.renderInlineMarkdown(text)
+		r.writeStyled(bold, styled)
+		fmt.Fprint(r.w, "\n")
+		return
+	}
+
+	// Regular text with inline markdown rendering.
+	fmt.Fprint(r.w, r.renderInlineMarkdown(line)+"\n")
 }
 
 // flushTable renders any buffered markdown table rows as a box-drawing table.
@@ -375,9 +415,15 @@ func (r *StreamRenderer) flushTable() {
 // flushAssistantText outputs any remaining buffered text and table rows.
 // Called at turn boundaries and before tool calls.
 func (r *StreamRenderer) flushAssistantText() {
+	// If there's a partial line that's a table row, add it to the table
+	// buffer before flushing (handles tables without trailing newlines).
+	if r.lineBuf != "" && isTableRow(r.lineBuf) {
+		r.tableRows = append(r.tableRows, r.lineBuf)
+		r.lineBuf = ""
+	}
 	r.flushTable()
 	if r.lineBuf != "" {
-		fmt.Fprint(r.w, r.lineBuf)
+		fmt.Fprint(r.w, r.renderInlineMarkdown(r.lineBuf))
 		r.lineBuf = ""
 	}
 	r.needsNewline = false
