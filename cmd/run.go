@@ -51,6 +51,7 @@ var (
 	runCwd                string
 	runName               string
 	runWait               bool
+	runRender             bool
 	runNotifySession      string
 	runNotifyMunin        bool
 	runNotifyEventDir     string
@@ -65,6 +66,7 @@ func init() {
 	runCmd.Flags().StringVar(&runCwd, "cwd", "", "working directory (default: current dir)")
 	runCmd.Flags().StringVar(&runName, "name", "", "short label for monitor output (default: model name)")
 	runCmd.Flags().BoolVar(&runWait, "wait", false, "block until the agent session finishes")
+	runCmd.Flags().BoolVar(&runRender, "render", false, "show human-readable output in the tmux session instead of raw JSON")
 	runCmd.Flags().StringVar(&runNotifySession, "notify-session", "",
 		"pi session ID to send a follow_up message to when done (default: $PI_SESSION_ID)")
 	runCmd.Flags().BoolVar(&runNotifyMunin, "notify-munin", false,
@@ -130,7 +132,7 @@ func runRun(_ *cobra.Command, _ []string) error {
 	// the terminal, and write a sanitized NDJSON stream to the log file. Delta
 	// events can otherwise include full accumulated content and make logs grow
 	// quadratically.
-	script := buildRunScript(cwd, taskFile, runModel, logFile, self)
+	script := buildRunScript(cwd, taskFile, runModel, logFile, self, runRender)
 	if err := os.WriteFile(scriptFile, []byte(script), 0o755); err != nil {
 		return fmt.Errorf("write script: %w", err)
 	}
@@ -211,17 +213,21 @@ func runRun(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func buildRunScript(cwd, taskFile, model, logFile, self string) string {
+func buildRunScript(cwd, taskFile, model, logFile, self string, render bool) string {
 	// stderr goes to a separate file so it doesn't pollute the NDJSON log.
 	// Pi emits terminal escape sequences (OSC notifications) on stderr
 	// that can be very large and break log parsing.
 	stderrFile := logFile + ".stderr"
+	recordFlags := ""
+	if render {
+		recordFlags = " --render"
+	}
 	return fmt.Sprintf(`#!/bin/sh
 set -e
 cd %s
 task=$(cat %s)
-exec pi --mode json --model %s --no-session -p "$task" 2>%s | %s record %s
-`, shellQuote(cwd), shellQuote(taskFile), shellQuote(model), shellQuote(stderrFile), shellQuote(self), shellQuote(logFile))
+exec pi --mode json --model %s --no-session -p "$task" 2>%s | %s record%s %s
+`, shellQuote(cwd), shellQuote(taskFile), shellQuote(model), shellQuote(stderrFile), shellQuote(self), recordFlags, shellQuote(logFile))
 }
 
 func resolveWatcherNotifyOptions(notifyMunin bool, getenv func(string) string) (watcherNotifyOptions, error) {

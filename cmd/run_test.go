@@ -194,7 +194,7 @@ func TestWatcherArgsIncludesProgressFlag(t *testing.T) {
 }
 
 func TestBuildRunScriptUsesRecorder(t *testing.T) {
-	script := buildRunScript("/tmp/work", "/tmp/task.txt", "gpt-5.4", "/tmp/run.log", "/usr/local/bin/agentctl")
+	script := buildRunScript("/tmp/work", "/tmp/task.txt", "gpt-5.4", "/tmp/run.log", "/usr/local/bin/agentctl", false)
 
 	if strings.Contains(script, "tee -a") {
 		t.Fatalf("expected run script to stop using tee, got %q", script)
@@ -207,6 +207,17 @@ func TestBuildRunScriptUsesRecorder(t *testing.T) {
 	}
 	if strings.Contains(script, "2>&1") {
 		t.Fatalf("expected no stderr-to-stdout merge, got %q", script)
+	}
+}
+
+func TestBuildRunScriptWithRender(t *testing.T) {
+	script := buildRunScript("/tmp/work", "/tmp/task.txt", "gpt-5.4", "/tmp/run.log", "/usr/local/bin/agentctl", true)
+
+	if !strings.Contains(script, "record --render") {
+		t.Fatalf("expected --render flag in record command, got %q", script)
+	}
+	if !strings.Contains(script, "'/usr/local/bin/agentctl' record --render '/tmp/run.log'") {
+		t.Fatalf("expected record --render invocation, got %q", script)
 	}
 }
 

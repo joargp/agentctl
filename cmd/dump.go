@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joargp/agentctl/internal/render"
 	"github.com/joargp/agentctl/internal/session"
 	"github.com/joargp/agentctl/internal/tmux"
 	"github.com/nxadm/tail"
@@ -47,6 +48,7 @@ var (
 	dumpNoHeader  bool
 	dumpTurns     int
 	dumpLast      bool
+	dumpRender    bool
 )
 
 func init() {
@@ -58,6 +60,7 @@ func init() {
 	dumpCmd.Flags().BoolVar(&dumpNoHeader, "no-header", false, "skip the session metadata header")
 	dumpCmd.Flags().IntVarP(&dumpTurns, "turns", "t", 0, "show only the last N turns (0 = all)")
 	dumpCmd.Flags().BoolVar(&dumpLast, "last", false, "show only the last turn (shortcut for --turns 1)")
+	dumpCmd.Flags().BoolVar(&dumpRender, "render", false, "use Pi-TUI-like formatting with colors (use with --follow)")
 	rootCmd.AddCommand(dumpCmd)
 }
 
@@ -97,6 +100,9 @@ func runDump(_ *cobra.Command, args []string) error {
 	}
 
 	if dumpFollow {
+		if dumpRender {
+			return runDumpFollowRendered(s)
+		}
 		return runDumpFollow(s)
 	}
 
@@ -267,6 +273,85 @@ func runDumpFollow(s *session.Session) error {
 							fmt.Print(text)
 						}
 					}
+				default:
+					return nil
+				}
+			}
+		}
+	}
+}
+
+// runDumpFollowRendered tails the log and renders with Pi-TUI-like formatting.
+func runDumpFollowRendered(s *session.Session) error {
+	t, err := tail.TailFile(s.LogFile, tail.Config{
+		Follow:    true,
+		ReOpen:    true,
+		MustExist: false,
+		Poll:      true,
+		Logger:    tail.DiscardingLogger,
+	})
+	if err != nil {
+		return fmt.Errorf("tail %s: %w", s.LogFile, err)
+	}
+	defer t.Cleanup()
+
+	renderer := render.New(os.Stdout)
+
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	closeDone := func() { closeOnce.Do(func() { close(done) }) }
+
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(sig)
+		select {
+		case <-sig:
+			closeDone()
+		case <-done:
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if !tmux.SessionExists(s.TmuxSession) {
+					time.Sleep(500 * time.Millisecond)
+					closeDone()
+					return
+				}
+			}
+		}
+	}()
+
+	printSessionHeader(s)
+
+	for {
+		select {
+		case line, ok := <-t.Lines:
+			if !ok {
+				return nil
+			}
+			if line.Err != nil {
+				continue
+			}
+			renderer.RenderLine([]byte(line.Text))
+		case <-done:
+			for {
+				select {
+				case line, ok := <-t.Lines:
+					if !ok || line == nil {
+						return nil
+					}
+					if line.Err != nil {
+						continue
+					}
+					renderer.RenderLine([]byte(line.Text))
 				default:
 					return nil
 				}

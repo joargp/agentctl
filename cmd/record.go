@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/joargp/agentctl/internal/render"
 	"github.com/joargp/agentctl/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -18,7 +19,10 @@ var recordCmd = &cobra.Command{
 	RunE:   runRecord,
 }
 
+var recordRender bool
+
 func init() {
+	recordCmd.Flags().BoolVar(&recordRender, "render", false, "render human-readable output to stdout instead of raw JSON")
 	rootCmd.AddCommand(recordCmd)
 }
 
@@ -30,6 +34,9 @@ func runRecord(_ *cobra.Command, args []string) error {
 	}
 	defer f.Close()
 
+	if recordRender {
+		return recordStreamRendered(os.Stdin, os.Stdout, f)
+	}
 	return recordStream(os.Stdin, os.Stdout, f)
 }
 
@@ -99,6 +106,73 @@ func recordStream(in io.Reader, out io.Writer, log io.Writer) error {
 		}
 		if err != nil {
 			// Flush remaining batch on EOF.
+			if flushErr := flushBatch(); flushErr != nil {
+				return flushErr
+			}
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+// recordStreamRendered reads NDJSON from in, writes sanitized events to log,
+// and renders human-readable formatted output to out using the render package.
+// This replaces the raw JSON passthrough with Pi-TUI-like terminal output.
+func recordStreamRendered(in io.Reader, out io.Writer, log io.Writer) error {
+	reader := bufio.NewReader(in)
+	renderer := render.New(out)
+	var batch *deltaBatch
+
+	flushBatch := func() error {
+		if batch == nil {
+			return nil
+		}
+		line := session.MarshalBatchedDelta(batch.event, batch.delta)
+		batch = nil
+		if line == nil {
+			return fmt.Errorf("marshal batched delta: internal error")
+		}
+		_, writeErr := log.Write(line)
+		return writeErr
+	}
+
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			// Render to terminal (formatted).
+			renderer.RenderLine(line)
+
+			if !looksLikeJSON(line) {
+				continue
+			}
+
+			sanitized := session.SanitizeRecordingLine(line)
+			if !looksLikeJSON(sanitized) {
+				continue
+			}
+
+			// Try to batch consecutive delta events.
+			if key, delta, evt, ok := session.ParseBatchableDelta(sanitized); ok {
+				if batch != nil && batch.key == key {
+					batch.delta += delta
+				} else {
+					if writeErr := flushBatch(); writeErr != nil {
+						return writeErr
+					}
+					batch = &deltaBatch{key: key, delta: delta, event: evt}
+				}
+			} else {
+				if writeErr := flushBatch(); writeErr != nil {
+					return writeErr
+				}
+				if _, writeErr := log.Write(sanitized); writeErr != nil {
+					return writeErr
+				}
+			}
+		}
+		if err != nil {
 			if flushErr := flushBatch(); flushErr != nil {
 				return flushErr
 			}

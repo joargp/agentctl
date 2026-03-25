@@ -228,6 +228,59 @@ func TestRecordStreamFiltersTerminalEscapeSequences(t *testing.T) {
 	}
 }
 
+func TestRecordStreamRenderedFormatsOutput(t *testing.T) {
+	lines := []string{
+		`{"type":"text_start"}`,
+		`{"type":"text_delta","delta":"Hello world"}`,
+		`{"type":"turn_start"}`,
+		`{"type":"turn_end","message":{"usage":{"totalTokens":1000,"cost":{"total":0.01}}}}`,
+		"",
+	}
+	input := strings.Join(lines, "\n")
+
+	var stdout bytes.Buffer
+	var log bytes.Buffer
+	if err := recordStreamRendered(strings.NewReader(input), &stdout, &log); err != nil {
+		t.Fatalf("recordStreamRendered returned error: %v", err)
+	}
+
+	// stdout should contain rendered text, not raw JSON.
+	out := stdout.String()
+	if strings.Contains(out, `"type"`) {
+		t.Fatalf("expected rendered output (no raw JSON), got %q", out)
+	}
+	if !strings.Contains(out, "Hello world") {
+		t.Fatalf("expected rendered text content, got %q", out)
+	}
+
+	// Log should still contain sanitized NDJSON.
+	logged := log.String()
+	if !strings.Contains(logged, `"text_delta"`) {
+		t.Fatalf("expected NDJSON in log, got %q", logged)
+	}
+}
+
+func TestRecordStreamRenderedSanitizesLog(t *testing.T) {
+	input := strings.Join([]string{
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":1,"delta":"test","partial":"test full","message":{"role":"assistant","content":[]}}}`,
+		"",
+	}, "\n")
+
+	var stdout bytes.Buffer
+	var log bytes.Buffer
+	if err := recordStreamRendered(strings.NewReader(input), &stdout, &log); err != nil {
+		t.Fatalf("recordStreamRendered returned error: %v", err)
+	}
+
+	logged := log.String()
+	if strings.Contains(logged, `"partial"`) {
+		t.Fatalf("expected sanitized log to drop partial field, got %q", logged)
+	}
+	if !strings.Contains(logged, `"delta"`) {
+		t.Fatalf("expected sanitized log to keep delta, got %q", logged)
+	}
+}
+
 func TestLooksLikeJSON(t *testing.T) {
 	tests := []struct {
 		input    string
