@@ -49,6 +49,7 @@ var (
 	dumpTurns     int
 	dumpLast      bool
 	dumpRender    bool
+	dumpNoColor   bool
 )
 
 func init() {
@@ -60,7 +61,8 @@ func init() {
 	dumpCmd.Flags().BoolVar(&dumpNoHeader, "no-header", false, "skip the session metadata header")
 	dumpCmd.Flags().IntVarP(&dumpTurns, "turns", "t", 0, "show only the last N turns (0 = all)")
 	dumpCmd.Flags().BoolVar(&dumpLast, "last", false, "show only the last turn (shortcut for --turns 1)")
-	dumpCmd.Flags().BoolVar(&dumpRender, "render", false, "use Pi-TUI-like formatting with colors (use with --follow)")
+	dumpCmd.Flags().BoolVar(&dumpRender, "render", false, "use Pi-TUI-like formatting with colors and markdown rendering")
+	dumpCmd.Flags().BoolVar(&dumpNoColor, "no-color", false, "disable colored output (use with --render)")
 	rootCmd.AddCommand(dumpCmd)
 }
 
@@ -104,6 +106,11 @@ func runDump(_ *cobra.Command, args []string) error {
 			return runDumpFollowRendered(s)
 		}
 		return runDumpFollow(s)
+	}
+
+	// Non-follow render mode: pipe entire log through StreamRenderer.
+	if dumpRender {
+		return runDumpRendered(s)
 	}
 
 	data, err := os.ReadFile(s.LogFile)
@@ -185,6 +192,42 @@ func runDump(_ *cobra.Command, args []string) error {
 	}
 	for _, l := range lines {
 		fmt.Println(l)
+	}
+	return nil
+}
+
+// runDumpRendered reads the complete log and renders it through StreamRenderer.
+func runDumpRendered(s *session.Session) error {
+	data, err := os.ReadFile(s.LogFile)
+	if err != nil {
+		if os.IsNotExist(err) && tmux.SessionExists(s.TmuxSession) {
+			fmt.Println("(waiting for output...)")
+			return nil
+		}
+		return fmt.Errorf("read log: %w", err)
+	}
+
+	if dumpLast {
+		dumpTurns = 1
+	}
+	if dumpTurns > 0 {
+		data = filterLastNTurns(data, dumpTurns)
+	}
+
+	printSessionHeader(s)
+
+	var opts []render.Option
+	if dumpNoColor {
+		opts = append(opts, render.WithNoColor())
+	}
+	renderer := render.New(os.Stdout, opts...)
+	lines := splitLines(data)
+	// Apply --lines limit: render only the last N JSON events.
+	if len(lines) > dumpLines {
+		lines = lines[len(lines)-dumpLines:]
+	}
+	for _, line := range lines {
+		renderer.RenderLine([]byte(line))
 	}
 	return nil
 }
@@ -295,7 +338,11 @@ func runDumpFollowRendered(s *session.Session) error {
 	}
 	defer t.Cleanup()
 
-	renderer := render.New(os.Stdout)
+	var opts []render.Option
+	if dumpNoColor {
+		opts = append(opts, render.WithNoColor())
+	}
+	renderer := render.New(os.Stdout, opts...)
 
 	done := make(chan struct{})
 	var closeOnce sync.Once
