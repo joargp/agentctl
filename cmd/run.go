@@ -121,7 +121,7 @@ func runRun(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("write task file: %w", err)
 	}
 
-	self, err := os.Executable()
+	self, err := resolveExecutable()
 	if err != nil {
 		return fmt.Errorf("resolve executable: %w", err)
 	}
@@ -211,6 +211,53 @@ func runRun(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
+func resolveExecutable() (string, error) {
+	return resolveExecutableWith(os.Executable, os.Args, exec.LookPath, filepath.Abs, filepath.EvalSymlinks)
+}
+
+func resolveExecutableWith(
+	osExecutable func() (string, error),
+	args []string,
+	lookPath func(string) (string, error),
+	abs func(string) (string, error),
+	evalSymlinks func(string) (string, error),
+) (string, error) {
+	exe, err := osExecutable()
+	if err == nil && !looksLikeDynamicLinker(exe) {
+		return exe, nil
+	}
+
+	if len(args) == 0 || args[0] == "" {
+		if err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("executable resolved to dynamic linker: %s", exe)
+	}
+
+	path := args[0]
+	if !filepath.IsAbs(path) {
+		path, err = lookPath(path)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	path, err = abs(path)
+	if err != nil {
+		return "", err
+	}
+	path, err = evalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func looksLikeDynamicLinker(path string) bool {
+	path = strings.ToLower(path)
+	return strings.Contains(path, "ld-musl") || strings.Contains(path, "ld-linux")
+}
+
 func buildRunScript(cwd, taskFile, model, logFile, self string) string {
 	// stderr goes to a separate file so it doesn't pollute the NDJSON log.
 	// Pi emits terminal escape sequences (OSC notifications) on stderr
@@ -290,7 +337,7 @@ func hasWatcherNotifications(options watcherNotifyOptions) bool {
 // completion backends when the agent finishes. The process is fully detached
 // (new process group, no stdin/stdout/stderr) so it survives after `agentctl run` exits.
 func spawnWatcher(agentID string, options watcherNotifyOptions) error {
-	self, err := os.Executable()
+	self, err := resolveExecutable()
 	if err != nil {
 		return fmt.Errorf("resolve executable: %w", err)
 	}
