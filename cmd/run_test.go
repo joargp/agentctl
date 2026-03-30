@@ -193,6 +193,79 @@ func TestWatcherArgsIncludesProgressFlag(t *testing.T) {
 	}
 }
 
+func TestResolveExecutableUsesOSExecutableWhenNotLinker(t *testing.T) {
+	lookedUp := false
+	absoluted := false
+	resolvedSymlink := false
+
+	got, err := resolveExecutableWith(
+		func() (string, error) { return "/usr/local/bin/agentctl", nil },
+		[]string{"agentctl"},
+		func(path string) (string, error) {
+			lookedUp = true
+			return path, nil
+		},
+		func(path string) (string, error) {
+			absoluted = true
+			return path, nil
+		},
+		func(path string) (string, error) {
+			resolvedSymlink = true
+			return path, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveExecutableWith returned error: %v", err)
+	}
+	if got != "/usr/local/bin/agentctl" {
+		t.Fatalf("expected os.Executable path, got %q", got)
+	}
+	if lookedUp || absoluted || resolvedSymlink {
+		t.Fatalf("expected no fallback helpers to run, got lookedUp=%v absoluted=%v resolvedSymlink=%v", lookedUp, absoluted, resolvedSymlink)
+	}
+}
+
+func TestResolveExecutableFallsBackFromMuslLinkerToArgv0(t *testing.T) {
+	lookedUp := false
+	absoluted := false
+	resolvedSymlink := false
+
+	got, err := resolveExecutableWith(
+		func() (string, error) { return "/lib/ld-musl-x86_64.so.1", nil },
+		[]string{"agentctl"},
+		func(path string) (string, error) {
+			lookedUp = true
+			if path != "agentctl" {
+				t.Fatalf("expected LookPath input %q, got %q", "agentctl", path)
+			}
+			return "/workspace/bin/agentctl", nil
+		},
+		func(path string) (string, error) {
+			absoluted = true
+			if path != "/workspace/bin/agentctl" {
+				t.Fatalf("expected Abs input %q, got %q", "/workspace/bin/agentctl", path)
+			}
+			return path, nil
+		},
+		func(path string) (string, error) {
+			resolvedSymlink = true
+			if path != "/workspace/bin/agentctl" {
+				t.Fatalf("expected EvalSymlinks input %q, got %q", "/workspace/bin/agentctl", path)
+			}
+			return "/workspace/real/agentctl", nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolveExecutableWith returned error: %v", err)
+	}
+	if got != "/workspace/real/agentctl" {
+		t.Fatalf("expected fallback path, got %q", got)
+	}
+	if !lookedUp || !absoluted || !resolvedSymlink {
+		t.Fatalf("expected fallback helpers to run, got lookedUp=%v absoluted=%v resolvedSymlink=%v", lookedUp, absoluted, resolvedSymlink)
+	}
+}
+
 func TestBuildRunScriptUsesRecorder(t *testing.T) {
 	script := buildRunScript("/tmp/work", "/tmp/task.txt", "gpt-5.4", "/tmp/run.log", "/usr/local/bin/agentctl", false)
 
