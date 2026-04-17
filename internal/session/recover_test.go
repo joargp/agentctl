@@ -32,8 +32,8 @@ func TestLoadRecoversSessionFromLogWhenJSONMissing(t *testing.T) {
 	writeLogForTest(t, home, "recoverme",
 		`{"type":"session","timestamp":"2026-04-16T08:35:02.894Z","cwd":"/tmp/project"}`,
 		`{"type":"message_start","message":{"role":"user","timestamp":1776328503123,"content":[{"type":"text","text":"review this screenshot"}]}}`,
-		`{"type":"message_start","message":{"role":"assistant","model":"gemini-3.1-pro-preview","timestamp":1776328503194}}`,
-		`{"type":"turn_end","message":{"model":"gemini-3.1-pro-preview","usage":{"cost":{"total":0.0618}}}}`,
+		`{"type":"message_start","message":{"role":"assistant","provider":"google","model":"gemini-3.1-pro-preview","timestamp":1776328503194}}`,
+		`{"type":"turn_end","message":{"provider":"google","model":"gemini-3.1-pro-preview","usage":{"cost":{"total":0.0618}}}}`,
 	)
 
 	s, err := Load("recoverme")
@@ -43,7 +43,7 @@ func TestLoadRecoversSessionFromLogWhenJSONMissing(t *testing.T) {
 	if s.ID != "recoverme" {
 		t.Fatalf("expected recovered id, got %q", s.ID)
 	}
-	if s.Model != "gemini-3.1-pro-preview" {
+	if s.Model != "google/gemini-3.1-pro-preview" {
 		t.Fatalf("expected recovered model, got %q", s.Model)
 	}
 	if s.Task != "review this screenshot" {
@@ -83,7 +83,7 @@ func TestListIncludesRecoveredLogOnlySessions(t *testing.T) {
 	writeLogForTest(t, home, "logonly01",
 		`{"type":"session","timestamp":"2026-04-16T08:35:02.894Z","cwd":"/tmp/project"}`,
 		`{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"log only task"}]}}`,
-		`{"type":"message_start","message":{"role":"assistant","model":"gemini-3.1-pro-preview"}}`,
+		`{"type":"message_start","message":{"role":"assistant","provider":"google","model":"gemini-3.1-pro-preview"}}`,
 	)
 
 	sessions, err := List()
@@ -102,7 +102,7 @@ func TestListIncludesRecoveredLogOnlySessions(t *testing.T) {
 			foundSaved = true
 		case "logonly01":
 			foundRecovered = true
-			if s.Model != "gemini-3.1-pro-preview" {
+			if s.Model != "google/gemini-3.1-pro-preview" {
 				t.Fatalf("expected recovered model, got %q", s.Model)
 			}
 		}

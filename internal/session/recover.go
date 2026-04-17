@@ -36,6 +36,16 @@ func recoverSession(dir, id string) (*Session, error) {
 	return s, nil
 }
 
+func normalizeRecoveredModel(provider, model string) string {
+	if model == "" || strings.Contains(model, "/") {
+		return model
+	}
+	if provider == "google" {
+		return NormalizeModelName(model)
+	}
+	return model
+}
+
 func populateFromLog(s *Session) error {
 	f, err := os.Open(s.LogFile)
 	if err != nil {
@@ -54,6 +64,7 @@ func populateFromLog(s *Session) error {
 			Message   struct {
 				Role      string          `json:"role"`
 				Model     string          `json:"model"`
+				Provider  string          `json:"provider"`
 				Timestamp json.RawMessage `json:"timestamp"`
 				Content   []struct {
 					Type string `json:"type"`
@@ -103,7 +114,7 @@ func populateFromLog(s *Session) error {
 		case "message_start":
 			setStartedAt(ev.Message.Timestamp)
 			if s.Model == "" && ev.Message.Model != "" {
-				s.Model = ev.Message.Model
+				s.Model = normalizeRecoveredModel(ev.Message.Provider, ev.Message.Model)
 			}
 			if s.Task == "" && ev.Message.Role == "user" {
 				var parts []string
@@ -117,7 +128,7 @@ func populateFromLog(s *Session) error {
 		case "turn_end":
 			setStartedAt(ev.Message.Timestamp)
 			if s.Model == "" && ev.Message.Model != "" {
-				s.Model = ev.Message.Model
+				s.Model = normalizeRecoveredModel(ev.Message.Provider, ev.Message.Model)
 			}
 			s.Turns++
 			s.TotalCost += ev.Message.Usage.Cost.Total

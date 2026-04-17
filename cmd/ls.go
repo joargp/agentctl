@@ -103,6 +103,7 @@ func runLs(_ *cobra.Command, _ []string) error {
 		if !includeLsSession(s, running, sinceFilter) {
 			continue
 		}
+		model := session.NormalizeModelName(s.Model)
 		status := "done"
 		if running {
 			// Show current activity for running sessions.
@@ -127,9 +128,9 @@ func runLs(_ *cobra.Command, _ []string) error {
 			turnsStr = strconv.Itoa(stats.Turns)
 		}
 		if hasNames {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Name, s.Model, status, age, turnsStr, costStr, task)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Name, model, status, age, turnsStr, costStr, task)
 		} else {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, s.Model, status, age, turnsStr, costStr, task)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", s.ID, model, status, age, turnsStr, costStr, task)
 		}
 	}
 	return w.Flush()
@@ -147,7 +148,7 @@ func runLsQuiet(sessions []*session.Session, sinceFilter time.Duration) error {
 }
 
 func includeLsSession(s *session.Session, running bool, sinceFilter time.Duration) bool {
-	if lsModel != "" && !strings.Contains(s.Model, lsModel) {
+	if lsModel != "" && !strings.Contains(session.NormalizeModelName(s.Model), lsModel) {
 		return false
 	}
 	if lsTask != "" && !strings.Contains(strings.ToLower(s.Task), strings.ToLower(lsTask)) {

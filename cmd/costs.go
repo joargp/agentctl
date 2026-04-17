@@ -65,16 +65,20 @@ func runCosts(_ *cobra.Command, _ []string) error {
 		totalCost += stats.TotalCost
 		age := time.Since(s.StartedAt).Round(time.Second)
 		count++
+		model := session.NormalizeModelName(s.Model)
 
-		modelCosts[s.Model] += stats.TotalCost
-		modelCounts[s.Model]++
+		modelCosts[model] += stats.TotalCost
+		modelCounts[model]++
 
 		costStr := ""
 		if stats.TotalCost > 0 {
 			costStr = fmt.Sprintf("$%.4f", stats.TotalCost)
 		}
-		label := s.Label()
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, label, s.Model, age, costStr)
+		label := s.Name
+		if label == "" {
+			label = model
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, label, model, age, costStr)
 	}
 
 	fmt.Fprintf(w, "\t\t\t\t\n")

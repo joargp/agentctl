@@ -160,7 +160,7 @@ func TestRunLsRecoversLogOnlySessionsForModelFilter(t *testing.T) {
 	logData := strings.Join([]string{
 		`{"type":"session","timestamp":"2026-04-16T08:35:02.894Z","cwd":"/tmp/project"}`,
 		`{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"review screenshot"}]}}`,
-		`{"type":"message_start","message":{"role":"assistant","model":"gemini-3.1-pro-preview"}}`,
+		`{"type":"message_start","message":{"role":"assistant","provider":"google","model":"gemini-3.1-pro-preview"}}`,
 	}, "\n") + "\n"
 	if err := os.WriteFile(logFile, []byte(logData), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
@@ -191,8 +191,8 @@ func TestRunLsRecoversLogOnlySessionsForModelFilter(t *testing.T) {
 	if !strings.Contains(out, "gemlog01") {
 		t.Fatalf("expected ls output to contain recovered log-only session id, got %q", out)
 	}
-	if !strings.Contains(out, "gemini-3.1-pro-preview") {
-		t.Fatalf("expected ls output to contain recovered model, got %q", out)
+	if !strings.Contains(out, "google/gemini-3.1-pro-preview") {
+		t.Fatalf("expected ls output to contain normalized recovered model, got %q", out)
 	}
 }
 
@@ -208,8 +208,8 @@ func TestRunCostsIncludesRecoveredLogOnlySessions(t *testing.T) {
 	logData := strings.Join([]string{
 		`{"type":"session","timestamp":"2026-04-16T08:35:02.894Z","cwd":"/tmp/project"}`,
 		`{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"review screenshot"}]}}`,
-		`{"type":"message_start","message":{"role":"assistant","model":"gemini-3.1-pro-preview"}}`,
-		`{"type":"turn_end","message":{"model":"gemini-3.1-pro-preview","usage":{"cost":{"total":0.0123}}}}`,
+		`{"type":"message_start","message":{"role":"assistant","provider":"google","model":"gemini-3.1-pro-preview"}}`,
+		`{"type":"turn_end","message":{"provider":"google","model":"gemini-3.1-pro-preview","usage":{"cost":{"total":0.0123}}}}`,
 	}, "\n") + "\n"
 	if err := os.WriteFile(logFile, []byte(logData), 0o644); err != nil {
 		t.Fatalf("write log: %v", err)
@@ -232,6 +232,64 @@ func TestRunCostsIncludesRecoveredLogOnlySessions(t *testing.T) {
 	}
 	if !strings.Contains(out, "$0.0123") {
 		t.Fatalf("expected costs output to contain recovered session cost, got %q", out)
+	}
+}
+
+func TestRunCostsNormalizesBareGeminiForGrouping(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	saved := &session.Session{
+		ID:          "savedgem1",
+		Model:       "gemini-3.1-pro-preview",
+		Task:        "saved bare gemini",
+		Cwd:         home,
+		TmuxSession: "definitely-not-running",
+		LogFile:     "/nonexistent/session.log",
+		StartedAt:   time.Now().Add(-time.Minute),
+		Turns:       1,
+		TotalCost:   0.02,
+	}
+	saveSessionForTest(t, saved)
+
+	logDir := filepath.Join(home, ".local", "share", "agentctl", "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatalf("mkdir logs: %v", err)
+	}
+	logFile := filepath.Join(logDir, "recovered2.log")
+	logData := strings.Join([]string{
+		`{"type":"session","timestamp":"2026-04-16T08:35:02.894Z","cwd":"/tmp/project"}`,
+		`{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"review screenshot"}]}}`,
+		`{"type":"message_start","message":{"role":"assistant","provider":"google","model":"gemini-3.1-pro-preview"}}`,
+		`{"type":"turn_end","message":{"provider":"google","model":"gemini-3.1-pro-preview","usage":{"cost":{"total":0.03}}}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(logFile, []byte(logData), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	prevSince := costsSince
+	defer func() {
+		costsSince = prevSince
+	}()
+	costsSince = ""
+
+	out := captureStdout(t, func() {
+		if err := runCosts(nil, nil); err != nil {
+			t.Fatalf("runCosts returned error: %v", err)
+		}
+	})
+
+	if strings.Contains(out, "\ngemini-3.1-pro-preview\t1 sessions") {
+		t.Fatalf("expected bare gemini model not to be grouped separately, got %q", out)
+	}
+	if !strings.Contains(out, "google/gemini-3.1-pro-preview") {
+		t.Fatalf("expected normalized gemini model in grouped output, got %q", out)
+	}
+	if !strings.Contains(out, "2 sessions") {
+		t.Fatalf("expected normalized gemini model to aggregate to 2 sessions, got %q", out)
+	}
+	if !strings.Contains(out, "$0.0500") {
+		t.Fatalf("expected aggregated normalized gemini cost, got %q", out)
 	}
 }
 
