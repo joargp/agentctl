@@ -80,14 +80,17 @@ func Load(id string) (*Session, error) {
 		return nil, err
 	}
 	data, err := os.ReadFile(sessionFilePath(dir, id))
-	if err != nil {
+	if err == nil {
+		var s Session
+		if err := json.Unmarshal(data, &s); err != nil {
+			return nil, err
+		}
+		return &s, nil
+	}
+	if !os.IsNotExist(err) {
 		return nil, err
 	}
-	var s Session
-	if err := json.Unmarshal(data, &s); err != nil {
-		return nil, err
-	}
-	return &s, nil
+	return recoverSession(dir, id)
 }
 
 func List() ([]*Session, error) {
@@ -95,23 +98,48 @@ func List() ([]*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	sessionsByID := make(map[string]*Session)
+
 	sessDir := filepath.Join(dir, "sessions")
 	entries, err := os.ReadDir(sessDir)
-	if os.IsNotExist(err) {
-		return nil, nil
-	}
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	var sessions []*Session
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
-		s, err := Load(strings.TrimSuffix(e.Name(), ".json"))
+		id := strings.TrimSuffix(e.Name(), ".json")
+		s, err := Load(id)
 		if err != nil {
 			continue
 		}
+		sessionsByID[id] = s
+	}
+
+	logDir := filepath.Join(dir, "logs")
+	logEntries, err := os.ReadDir(logDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, e := range logEntries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".log" {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".log")
+		if _, ok := sessionsByID[id]; ok {
+			continue
+		}
+		s, err := recoverSession(dir, id)
+		if err != nil {
+			continue
+		}
+		sessionsByID[id] = s
+	}
+
+	var sessions []*Session
+	for _, s := range sessionsByID {
 		sessions = append(sessions, s)
 	}
 	return sessions, nil
