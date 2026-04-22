@@ -19,14 +19,15 @@ jobs:
 
       - name: Build binaries
         run: |
-          mkdir -p dist
-          GOOS=darwin  GOARCH=arm64 go build -o dist/agentctl_darwin_arm64  .
-          GOOS=darwin  GOARCH=amd64 go build -o dist/agentctl_darwin_amd64  .
-          GOOS=linux   GOARCH=amd64 go build -o dist/agentctl_linux_amd64   .
-          GOOS=linux   GOARCH=arm64 go build -o dist/agentctl_linux_arm64   .
+          DIST_DIR="$RUNNER_TEMP/dist"
+          mkdir -p "$DIST_DIR"
+          GOOS=darwin  GOARCH=arm64 go build -o "$DIST_DIR/agentctl_darwin_arm64"  .
+          GOOS=darwin  GOARCH=amd64 go build -o "$DIST_DIR/agentctl_darwin_amd64"  .
+          GOOS=linux   GOARCH=amd64 go build -o "$DIST_DIR/agentctl_linux_amd64"   .
+          GOOS=linux   GOARCH=arm64 go build -o "$DIST_DIR/agentctl_linux_arm64"   .
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: ${{ runner.temp }}/dist/*
           generate_release_notes: true
