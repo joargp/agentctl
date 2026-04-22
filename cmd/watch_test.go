@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/joargp/agentctl/internal/session"
 )
@@ -140,5 +141,66 @@ func TestCompletionMessageFallsBackToFullLogWhenTailMissesDelta(t *testing.T) {
 	}
 	if !strings.Contains(msg, strings.Repeat("A", 64)) {
 		t.Fatalf("expected completion message to include assistant text from full-log fallback")
+	}
+}
+
+func TestRunWatchSkipsNotificationsForCancelledSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	logFile := filepath.Join(home, "session.log")
+	if err := os.WriteFile(logFile, []byte(`{"type":"turn_end","message":{"usage":{"cost":{"total":0.01}}}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+
+	s := &session.Session{
+		ID:          "cancel123",
+		Model:       "openai/gpt-5.4",
+		Task:        "cancelled task",
+		Cwd:         home,
+		TmuxSession: "definitely-not-running",
+		LogFile:     logFile,
+		StartedAt:   time.Now(),
+	}
+	if err := session.Save(s); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	if err := markSessionCancelled(s); err != nil {
+		t.Fatalf("mark cancelled: %v", err)
+	}
+
+	eventDir := t.TempDir()
+	prevSession := watchNotifySession
+	prevEventDir := watchNotifyEventDir
+	prevEventChannel := watchNotifyEventChannel
+	prevEventThread := watchNotifyEventThread
+	prevProgress := watchProgress
+	defer func() {
+		watchNotifySession = prevSession
+		watchNotifyEventDir = prevEventDir
+		watchNotifyEventChannel = prevEventChannel
+		watchNotifyEventThread = prevEventThread
+		watchProgress = prevProgress
+	}()
+
+	watchNotifySession = ""
+	watchNotifyEventDir = eventDir
+	watchNotifyEventChannel = "C123"
+	watchNotifyEventThread = ""
+	watchProgress = false
+
+	if err := runWatch(nil, []string{s.ID}); err != nil {
+		t.Fatalf("runWatch returned error: %v", err)
+	}
+
+	entries, err := os.ReadDir(eventDir)
+	if err != nil {
+		t.Fatalf("read event dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected no completion event files for cancelled session, got %d", len(entries))
+	}
+	if sessionCancelled(s) {
+		t.Fatal("expected cancel marker to be cleared after watch handles cancellation")
 	}
 }

@@ -153,19 +153,28 @@ agentctl kill --all         # kill all sessions
 
 ## How it works
 
-Each `agentctl run` creates a tmux session that runs:
+Each `agentctl run` creates a tmux session that runs a small `agentctl supervise` wrapper. The supervisor:
+
+- launches `pi` in its own dedicated process group
+- streams pi's NDJSON output to the terminal while writing a sanitized log
+- records runtime PID/PGID metadata under `~/.local/share/agentctl/runtime/`
+- sends `SIGTERM`/`SIGKILL` to the full process group on normal exit, crash, timeout, tmux shutdown, or `agentctl kill`
+- reaps orphaned descendants on Linux via child-subreaper mode
+- marks explicitly killed sessions as cancelled so watchers do not emit misleading success notifications
+
+The supervised `pi` command is:
 
 ```sh
 pi --mode json --model <model> --no-session -p "<task>" 2><logfile>.stderr | agentctl record <logfile>
 ```
 
-Pi runs in JSON mode, producing streaming NDJSON events (text deltas, tool calls, tool results) on stdout. Stderr is redirected to a separate `.stderr` file to keep the NDJSON log clean (pi emits terminal escape sequences on stderr that can be very large). `agentctl record` mirrors the raw JSON stream to the terminal while stripping large `partial`/`message` payloads from `thinking_delta` and `text_delta` events before persisting them to the log file. Non-JSON lines are filtered out. This keeps recordings linear in size and still enables real-time progress monitoring via `dump` and `monitor`.
+Pi runs in JSON mode, producing streaming NDJSON events (text deltas, tool calls, tool results) on stdout. Stderr is redirected to a separate `.stderr` file to keep the NDJSON log clean (pi emits terminal escape sequences on stderr that can be very large). The supervisor mirrors the raw JSON stream to the terminal while stripping large `partial`/`message` payloads from `thinking_delta` and `text_delta` events before persisting them to the log file. Non-JSON lines are filtered out. This keeps recordings linear in size and still enables real-time progress monitoring via `dump` and `monitor`.
 
-When pi exits the tmux session is destroyed automatically, flipping the session status to `done`.
+When pi exits the supervisor tears down the rest of the agent's process tree and the tmux session is destroyed automatically, flipping the session status to `done`.
 
 When `--notify-session`, `--notify-munin`, or `--notify-event-dir` is set, `agentctl` also spawns a detached watcher process that waits for the tmux session to disappear and then sends the configured completion notification(s).
 
-Session metadata is stored in `~/.local/share/agentctl/sessions/`. Log files live in `~/.local/share/agentctl/logs/` and survive `kill`.
+Session metadata is stored in `~/.local/share/agentctl/sessions/`. Log files live in `~/.local/share/agentctl/logs/` and survive `kill`. Runtime PID/PGID state is stored in `~/.local/share/agentctl/runtime/` while a session is active and is removed on successful cleanup.
 
 ## Commands
 

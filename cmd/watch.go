@@ -79,6 +79,23 @@ func runWatch(_ *cobra.Command, args []string) error {
 	if progress != nil {
 		progress.Stop()
 	}
+	wasCancelled := sessionCancelled(s)
+	if err := cleanupSessionProcessTree(s, runtimeCleanupGrace); err != nil {
+		fmt.Fprintf(os.Stderr, "agentctl watch: process-tree cleanup failed: %v\n", err)
+	}
+	defer func() {
+		if err := clearSessionCancelled(s); err != nil {
+			fmt.Fprintf(os.Stderr, "agentctl watch: clear cancel marker failed: %v\n", err)
+		}
+	}()
+	if wasCancelled {
+		if notifyOptions.EventDir != "" {
+			if err := notify.CleanupProgressFiles(notifyOptions.EventDir, s.ID); err != nil {
+				fmt.Fprintf(os.Stderr, "agentctl watch: cleanup progress files failed: %v\n", err)
+			}
+		}
+		return nil
+	}
 
 	var errs []error
 	if err := cacheSessionLogStats(s); err != nil {

@@ -21,6 +21,8 @@ func recoverSession(dir, id string) (*Session, error) {
 		LogFile:     logFile,
 		ScriptFile:  filepath.Join(dir, "scripts", id+".sh"),
 		TaskFile:    filepath.Join(dir, "scripts", id+".task"),
+		RuntimeFile: filepath.Join(dir, "runtime", id+".json"),
+		CancelFile:  filepath.Join(dir, "runtime", id+".cancelled"),
 		TmuxSession: "agentctl-" + id,
 	}
 	if err := populateFromLog(s); err != nil {

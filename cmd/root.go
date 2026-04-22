@@ -34,7 +34,7 @@ func ensureDirs() error {
 	if err != nil {
 		return err
 	}
-	for _, sub := range []string{"sessions", "logs", "scripts"} {
+	for _, sub := range []string{"sessions", "logs", "scripts", "runtime"} {
 		if err := os.MkdirAll(filepath.Join(base, sub), 0o755); err != nil {
 			return fmt.Errorf("create data dir %s: %w", sub, err)
 		}

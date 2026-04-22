@@ -20,6 +20,8 @@ type Session struct {
 	LogFile     string    `json:"log_file"`
 	ScriptFile  string    `json:"script_file"`
 	TaskFile    string    `json:"task_file"`
+	RuntimeFile string    `json:"runtime_file,omitempty"`
+	CancelFile  string    `json:"cancel_file,omitempty"`
 	StartedAt   time.Time `json:"started_at"`
 	Turns       int       `json:"turns,omitempty"`
 	TotalCost   float64   `json:"total_cost,omitempty"`
@@ -55,6 +57,7 @@ func Save(s *Session) error {
 	if err != nil {
 		return err
 	}
+	hydrateDerivedPaths(s, dir)
 	if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0o755); err != nil {
 		return err
 	}
@@ -85,6 +88,7 @@ func Load(id string) (*Session, error) {
 		if err := json.Unmarshal(data, &s); err != nil {
 			return nil, err
 		}
+		hydrateDerivedPaths(&s, dir)
 		return &s, nil
 	}
 	if !os.IsNotExist(err) {
@@ -155,4 +159,28 @@ func Remove(id string) error {
 
 func sessionFilePath(dir, id string) string {
 	return filepath.Join(dir, "sessions", id+".json")
+}
+
+func hydrateDerivedPaths(s *Session, dir string) {
+	if s == nil || s.ID == "" {
+		return
+	}
+	if s.TmuxSession == "" {
+		s.TmuxSession = "agentctl-" + s.ID
+	}
+	if s.LogFile == "" {
+		s.LogFile = filepath.Join(dir, "logs", s.ID+".log")
+	}
+	if s.ScriptFile == "" {
+		s.ScriptFile = filepath.Join(dir, "scripts", s.ID+".sh")
+	}
+	if s.TaskFile == "" {
+		s.TaskFile = filepath.Join(dir, "scripts", s.ID+".task")
+	}
+	if s.RuntimeFile == "" {
+		s.RuntimeFile = filepath.Join(dir, "runtime", s.ID+".json")
+	}
+	if s.CancelFile == "" {
+		s.CancelFile = filepath.Join(dir, "runtime", s.ID+".cancelled")
+	}
 }

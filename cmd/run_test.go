@@ -267,30 +267,21 @@ func TestResolveExecutableFallsBackFromMuslLinkerToArgv0(t *testing.T) {
 }
 
 func TestBuildRunScriptUsesRecorder(t *testing.T) {
-	script := buildRunScript("/tmp/work", "/tmp/task.txt", "gpt-5.4", "/tmp/run.log", "/usr/local/bin/agentctl", false)
+	script := buildRunScript("abc123", "/usr/local/bin/agentctl", false)
 
-	if strings.Contains(script, "tee -a") {
-		t.Fatalf("expected run script to stop using tee, got %q", script)
+	if !strings.Contains(script, "exec '/usr/local/bin/agentctl' supervise 'abc123'") {
+		t.Fatalf("expected run script to exec supervisor, got %q", script)
 	}
-	if !strings.Contains(script, "'/usr/local/bin/agentctl' record '/tmp/run.log'") {
-		t.Fatalf("expected run script to invoke recorder, got %q", script)
-	}
-	if !strings.Contains(script, "2>'/tmp/run.log.stderr'") {
-		t.Fatalf("expected stderr redirect to separate file, got %q", script)
-	}
-	if strings.Contains(script, "2>&1") {
-		t.Fatalf("expected no stderr-to-stdout merge, got %q", script)
+	if strings.Contains(script, "record") || strings.Contains(script, "pi --mode json") {
+		t.Fatalf("expected run script to delegate to supervisor instead of piping directly, got %q", script)
 	}
 }
 
 func TestBuildRunScriptWithRender(t *testing.T) {
-	script := buildRunScript("/tmp/work", "/tmp/task.txt", "gpt-5.4", "/tmp/run.log", "/usr/local/bin/agentctl", true)
+	script := buildRunScript("abc123", "/usr/local/bin/agentctl", true)
 
-	if !strings.Contains(script, "record --render") {
-		t.Fatalf("expected --render flag in record command, got %q", script)
-	}
-	if !strings.Contains(script, "'/usr/local/bin/agentctl' record --render '/tmp/run.log'") {
-		t.Fatalf("expected record --render invocation, got %q", script)
+	if !strings.Contains(script, "supervise --render 'abc123'") {
+		t.Fatalf("expected --render flag in supervisor invocation, got %q", script)
 	}
 }
 

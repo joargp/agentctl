@@ -115,9 +115,10 @@ func runRun(_ *cobra.Command, _ []string) error {
 	logFile := filepath.Join(dataDir, "logs", id+".log")
 	taskFile := filepath.Join(dataDir, "scripts", id+".task")
 	scriptFile := filepath.Join(dataDir, "scripts", id+".sh")
+	runtimeFile := filepath.Join(dataDir, "runtime", id+".json")
 	tmuxSession := "agentctl-" + id
 
-	// Write task to a file so the shell script can read it safely,
+	// Write task to a file so the supervisor can read it safely,
 	// avoiding any quoting issues with the task content.
 	if err := os.WriteFile(taskFile, []byte(task), 0o644); err != nil {
 		return fmt.Errorf("write task file: %w", err)
@@ -127,30 +128,6 @@ func runRun(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve executable: %w", err)
 	}
-
-	// Wrapper script: cd, read task, exec pi in JSON mode, mirror raw output to
-	// the terminal, and write a sanitized NDJSON stream to the log file. Delta
-	// events can otherwise include full accumulated content and make logs grow
-	// quadratically.
-	script := buildRunScript(cwd, taskFile, runModel, logFile, self, runRender)
-	if err := os.WriteFile(scriptFile, []byte(script), 0o755); err != nil {
-		return fmt.Errorf("write script: %w", err)
-	}
-
-	// Ensure log file exists before pi starts writing to it.
-	if f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
-		f.Close()
-	}
-
-	if err := tmux.EnsureSocket(); err != nil {
-		return err
-	}
-	// Start the session directly running the script — no outer shell.
-	// When pi exits the script exits, the window closes, and the session is destroyed.
-	if err := tmux.NewSession(tmuxSession, "sh", scriptFile); err != nil {
-		return err
-	}
-	// Note: we don't use pipe-pane anymore since pi --mode json redirects directly to the log file.
 
 	sess := &session.Session{
 		ID:          id,
@@ -162,10 +139,43 @@ func runRun(_ *cobra.Command, _ []string) error {
 		LogFile:     logFile,
 		ScriptFile:  scriptFile,
 		TaskFile:    taskFile,
+		RuntimeFile: runtimeFile,
 		StartedAt:   time.Now(),
 	}
 	if err := session.Save(sess); err != nil {
 		return fmt.Errorf("save session: %w", err)
+	}
+	cleanupStartFailure := func() {
+		_ = session.Remove(id)
+		_ = os.Remove(scriptFile)
+		_ = os.Remove(taskFile)
+		_ = removeRuntimeState(runtimeFile)
+	}
+
+	// Wrapper script: exec the hidden supervisor command directly. The
+	// supervisor keeps pi in its own process group, tears down the full child
+	// tree on every exit path, and records the runtime PID/PGID for external
+	// cleanup during kill/watch flows.
+	script := buildRunScript(id, self, runRender)
+	if err := os.WriteFile(scriptFile, []byte(script), 0o755); err != nil {
+		cleanupStartFailure()
+		return fmt.Errorf("write script: %w", err)
+	}
+
+	// Ensure log file exists before pi starts writing to it.
+	if f, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
+		f.Close()
+	}
+
+	if err := tmux.EnsureSocket(); err != nil {
+		cleanupStartFailure()
+		return err
+	}
+	// Start the session directly running the script — no outer shell.
+	// When the supervisor exits the window closes and the tmux session disappears.
+	if err := tmux.NewSession(tmuxSession, "sh", scriptFile); err != nil {
+		cleanupStartFailure()
+		return err
 	}
 
 	// Spawn detached watcher before printing ID so it's already running.
@@ -194,6 +204,9 @@ func runRun(_ *cobra.Command, _ []string) error {
 		fmt.Fprintln(os.Stderr, "\nWaiting for agent to finish...")
 		for tmux.SessionExists(tmuxSession) {
 			time.Sleep(500 * time.Millisecond)
+		}
+		if err := cleanupSessionProcessTree(sess, runtimeCleanupGrace); err != nil {
+			fmt.Fprintf(os.Stderr, "warn: clean up process tree: %v\n", err)
 		}
 		// Cache turns+cost into session JSON so ls/status/costs don't rescan.
 		if err := cacheSessionLogStats(sess); err != nil {
@@ -260,21 +273,15 @@ func looksLikeDynamicLinker(path string) bool {
 	return strings.Contains(path, "ld-musl") || strings.Contains(path, "ld-linux")
 }
 
-func buildRunScript(cwd, taskFile, model, logFile, self string, render bool) string {
-	// stderr goes to a separate file so it doesn't pollute the NDJSON log.
-	// Pi emits terminal escape sequences (OSC notifications) on stderr
-	// that can be very large and break log parsing.
-	stderrFile := logFile + ".stderr"
-	recordFlags := ""
+func buildRunScript(id, self string, render bool) string {
+	renderFlag := ""
 	if render {
-		recordFlags = " --render"
+		renderFlag = " --render"
 	}
 	return fmt.Sprintf(`#!/bin/sh
 set -e
-cd %s
-task=$(cat %s)
-exec pi --mode json --model %s --no-session -p "$task" 2>%s | %s record%s %s
-`, shellQuote(cwd), shellQuote(taskFile), shellQuote(model), shellQuote(stderrFile), shellQuote(self), recordFlags, shellQuote(logFile))
+exec %s supervise%s %s
+`, shellQuote(self), renderFlag, shellQuote(id))
 }
 
 func resolveWatcherNotifyOptions(notifyMunin bool, getenv func(string) string) (watcherNotifyOptions, error) {

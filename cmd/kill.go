@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -48,13 +49,24 @@ func killOne(id string) error {
 	if err != nil {
 		return fmt.Errorf("session %s: %w", id, err)
 	}
+	if err := markSessionCancelled(s); err != nil {
+		return fmt.Errorf("mark session %s cancelled: %w", id, err)
+	}
+
+	var killErrs []error
+	if err := cleanupSessionProcessTree(s, runtimeCleanupGrace); err != nil {
+		killErrs = append(killErrs, fmt.Errorf("clean up process tree: %w", err))
+	}
 	if tmux.SessionExists(s.TmuxSession) {
 		if err := tmux.KillSession(s.TmuxSession); err != nil {
-			fmt.Fprintf(os.Stderr, "warn: kill tmux session: %v\n", err)
+			killErrs = append(killErrs, fmt.Errorf("kill tmux session: %w", err))
 		}
 	}
+	if len(killErrs) > 0 {
+		return fmt.Errorf("kill %s: %w", id, errors.Join(killErrs...))
+	}
 	// Remove script/task files. Log is preserved unless --clean is set.
-	filesToRemove := []string{s.ScriptFile, s.TaskFile}
+	filesToRemove := []string{s.ScriptFile, s.TaskFile, s.RuntimeFile}
 	if killClean {
 		filesToRemove = append(filesToRemove, s.LogFile, s.LogFile+".stderr")
 	}
