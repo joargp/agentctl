@@ -12,10 +12,15 @@ import (
 var rootCmd = &cobra.Command{
 	Use:          "agentctl",
 	Short:        "Run and monitor pi coding agent sessions",
+	Version:      currentVersion(),
 	SilenceUsage: true, // don't print usage on runtime errors
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return ensureDirs()
 	},
+}
+
+func init() {
+	rootCmd.SetVersionTemplate("{{.Version}}\n")
 }
 
 func Execute() {

@@ -20,6 +20,13 @@ Requires `tmux` and `pi` in `$PATH`.
 
 ## Usage
 
+### Check the version
+
+```bash
+agentctl --version
+agentctl version
+```
+
 ### Spawn an agent
 
 ```bash
