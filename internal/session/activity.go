@@ -11,10 +11,11 @@ import (
 // Status is the human-readable progress string emitted for external notifications.
 // It is empty for events that should not produce a progress update.
 type Activity struct {
-	State   string
-	Detail  string
-	Status  string
-	Replace bool
+	State    string
+	Detail   string
+	Status   string
+	Replace  bool
+	Category string
 }
 
 // ParseLastActivity scans the JSON log and returns the last meaningful activity
@@ -68,7 +69,10 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 		aeType, _ := ae["type"].(string)
 		switch aeType {
 		case "thinking_start":
-			return Activity{State: "thinking", Status: "Thinking..."}
+			return Activity{State: "thinking", Status: "Thinking...", Category: "thinking"}
+		case "thinking_delta":
+			delta, _ := ae["delta"].(string)
+			return Activity{State: "thinking", Status: formatThinkingStatus(delta), Replace: true, Category: "thinking"}
 		case "thinking_end":
 			return Activity{State: "writing"}
 		case "text_delta":
@@ -82,7 +86,10 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 		}
 	// Top-level event types emitted by OpenAI models (not nested in assistantMessageEvent).
 	case "thinking_start":
-		return Activity{State: "thinking", Status: "Thinking..."}
+		return Activity{State: "thinking", Status: "Thinking...", Category: "thinking"}
+	case "thinking_delta":
+		delta, _ := event["delta"].(string)
+		return Activity{State: "thinking", Status: formatThinkingStatus(delta), Replace: true, Category: "thinking"}
 	case "thinking_end":
 		return Activity{State: "writing"}
 	case "text_delta":
@@ -96,7 +103,7 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 	case "tool_execution_start":
 		toolName, _ := event["toolName"].(string)
 		args, _ := event["args"].(map[string]interface{})
-		activity := Activity{State: "running " + toolName, Status: "→ " + toolName}
+		activity := Activity{State: "running " + toolName, Status: "→ " + toolName, Category: "tool:" + toolName}
 		switch toolName {
 		case "bash":
 			activity.Status = "→ bash"
@@ -117,17 +124,16 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 				activity.Status = "→ Write " + path
 			}
 		case "read":
-			activity.Status = "→ Read"
+			activity.Status = ""
 			if path, ok := args["path"].(string); ok {
 				activity.Detail = path
-				activity.Status = "→ Read " + path
 			}
 		}
 		return activity
 	case "tool_execution_end":
 		isError, _ := event["isError"].(bool)
 		if isError {
-			return Activity{State: "writing", Status: "tool error"}
+			return Activity{State: "writing", Status: "tool error", Category: "error"}
 		}
 		return Activity{State: "writing"}
 	case "turn_start":
@@ -172,6 +178,14 @@ func formatAssistantTextStatus(content string) string {
 		return ""
 	}
 	return truncateRunes(content, 3000)
+}
+
+func formatThinkingStatus(content string) string {
+	content = truncateActivityText(content, 180)
+	if content == "" {
+		return ""
+	}
+	return "Thinking: " + content
 }
 
 func truncateActivityText(s string, maxLen int) string {

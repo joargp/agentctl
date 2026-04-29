@@ -50,8 +50,30 @@ func TestFormatEventStatusToolRead(t *testing.T) {
 	}
 
 	status := FormatEventStatus(event, new(int))
-	if status != "→ Read cmd/watch.go" {
-		t.Fatalf("expected read status, got %q", status)
+	if status != "" {
+		t.Fatalf("expected read status to be suppressed, got %q", status)
+	}
+	activity := ParseActivityEvent(event, new(int))
+	if activity.Category != "tool:read" {
+		t.Fatalf("expected read category, got %q", activity.Category)
+	}
+}
+
+func TestFormatEventStatusThinkingDelta(t *testing.T) {
+	var event map[string]interface{}
+	if err := json.Unmarshal([]byte(`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"Need to inspect the auth telemetry flow before editing."}}`), &event); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+
+	activity := ParseActivityEvent(event, new(int))
+	if activity.Status != "Thinking: Need to inspect the auth telemetry flow before editing." {
+		t.Fatalf("expected thinking delta status, got %q", activity.Status)
+	}
+	if activity.Category != "thinking" {
+		t.Fatalf("expected thinking category, got %q", activity.Category)
+	}
+	if !activity.Replace {
+		t.Fatal("expected thinking delta to replace previous thinking progress")
 	}
 }
 

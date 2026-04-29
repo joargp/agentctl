@@ -231,12 +231,14 @@ func emitProgressLine(line *tail.Line, s *session.Session, opts watcherNotifyOpt
 		ThreadTs:   opts.EventThread,
 		SubagentID: s.ID,
 		Text:       activity.Status,
+		Category:   activity.Category,
 		Replace:    activity.Replace,
 	}
 	// Include model and task in the first progress event so
 	// the Munin runtime can display them in the progress header.
 	if isFirst {
 		event.Model = s.Model
+		event.Name = s.Name
 		event.Task = truncateTask(s.Task, 100)
 	}
 	_ = notify.WriteProgressEvent(opts.EventDir, event)

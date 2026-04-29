@@ -46,7 +46,9 @@ type ProgressEvent struct {
 	SubagentID string
 	Text       string
 	Model      string // model used by the subagent (optional, included in first event)
+	Name       string // short subagent name (optional, included in first event)
 	Task       string // short task description (optional, included in first event)
+	Category   string // progress category such as thinking, tool:bash, error
 	Replace    bool   // replace the progress body with the provided text
 }
 
@@ -147,13 +149,19 @@ func WriteProgressEvent(dir string, event ProgressEvent) error {
 		Text:       event.Text,
 		Replace:    event.Replace,
 	}
-	if event.Model != "" || event.Task != "" {
+	if event.Model != "" || event.Task != "" || event.Name != "" || event.Category != "" {
 		payload.Metadata = make(map[string]string)
 		if event.Model != "" {
 			payload.Metadata["model"] = event.Model
 		}
+		if event.Name != "" {
+			payload.Metadata["name"] = event.Name
+		}
 		if event.Task != "" {
 			payload.Metadata["task"] = event.Task
+		}
+		if event.Category != "" {
+			payload.Metadata["category"] = event.Category
 		}
 	}
 	data, err := json.Marshal(payload)
