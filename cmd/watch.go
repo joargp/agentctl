@@ -185,6 +185,7 @@ func (p *progressTailer) run(ctx context.Context, t *tail.Tail, s *session.Sessi
 
 	lastStatus := ""
 	turnCount := 0
+	progressState := progressEventState{}
 	draining := false
 
 	for {
@@ -194,7 +195,7 @@ func (p *progressTailer) run(ctx context.Context, t *tail.Tail, s *session.Sessi
 				if !ok {
 					return
 				}
-				emitProgressLine(line, s, opts, &turnCount, &lastStatus)
+				emitProgressLine(line, s, opts, &turnCount, &lastStatus, &progressState)
 			default:
 				return
 			}
@@ -209,17 +210,34 @@ func (p *progressTailer) run(ctx context.Context, t *tail.Tail, s *session.Sessi
 			if !ok {
 				return
 			}
-			emitProgressLine(line, s, opts, &turnCount, &lastStatus)
+			emitProgressLine(line, s, opts, &turnCount, &lastStatus, &progressState)
 		}
 	}
 }
 
-func emitProgressLine(line *tail.Line, s *session.Session, opts watcherNotifyOptions, turnCount *int, lastStatus *string) {
+type progressEventState struct {
+	thinking strings.Builder
+}
+
+func emitProgressLine(line *tail.Line, s *session.Session, opts watcherNotifyOptions, turnCount *int, lastStatus *string, progressState *progressEventState) {
 	if line == nil || line.Err != nil {
 		return
 	}
 
 	activity := session.ParseActivityLine(line.Text, turnCount)
+	if progressState != nil {
+		switch activity.Category {
+		case "thinking":
+			if activity.Delta != "" {
+				progressState.thinking.WriteString(activity.Delta)
+				activity.Status = "Thinking: " + truncateRunesASCII(strings.TrimSpace(progressState.thinking.String()), 180)
+			}
+		default:
+			if activity.State != "thinking" {
+				progressState.thinking.Reset()
+			}
+		}
+	}
 	if activity.Status == "" || activity.Status == *lastStatus {
 		return
 	}

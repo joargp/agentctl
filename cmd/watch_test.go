@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/joargp/agentctl/internal/session"
+	"github.com/nxadm/tail"
 )
 
 func TestCompletionSummaryLinesUsesAssistantTextOnly(t *testing.T) {
@@ -31,6 +33,47 @@ func TestCompletionSummaryLinesUsesAssistantTextOnly(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("expected line %d = %q, got %q (all: %#v)", i, want[i], got[i], got)
 		}
+	}
+}
+
+func TestEmitProgressLineAccumulatesThinkingDeltas(t *testing.T) {
+	dir := t.TempDir()
+	s := &session.Session{ID: "agent-1", Model: "gpt-5.5", Task: "test task"}
+	opts := watcherNotifyOptions{EventDir: dir, EventChannel: "C123"}
+	turnCount := 0
+	lastStatus := ""
+	progressState := progressEventState{}
+
+	emitProgressLine(&tail.Line{Text: `{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"Need to inspect "}}`}, s, opts, &turnCount, &lastStatus, &progressState)
+	emitProgressLine(&tail.Line{Text: `{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"the directory"}}`}, s, opts, &turnCount, &lastStatus, &progressState)
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir returned error: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 progress events, got %d", len(entries))
+	}
+
+	var last struct {
+		Text string `json:"text"`
+	}
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatalf("ReadFile returned error: %v", err)
+		}
+		var event struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(data, &event); err != nil {
+			t.Fatalf("Unmarshal returned error: %v", err)
+		}
+		last = event
+	}
+
+	if last.Text != "Thinking: Need to inspect the directory" {
+		t.Fatalf("expected accumulated thinking text, got %q", last.Text)
 	}
 }
 
