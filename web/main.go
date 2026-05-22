@@ -11,8 +11,10 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/joargp/agentctl/internal/session"
@@ -22,6 +24,12 @@ import (
 
 //go:embed static/*
 var staticFiles embed.FS
+
+var (
+	cacheMutex     sync.RWMutex
+	sessionCache   = make(map[string]APISession)
+	loadedSessions = make(map[string]*session.Session)
+)
 
 type APISession struct {
 	ID         string    `json:"id"`
@@ -179,8 +187,86 @@ func main() {
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
+func listSessionsFast() ([]*session.Session, error) {
+	dir, err := session.DataDir()
+	if err != nil {
+		return nil, err
+	}
+
+	sessDir := filepath.Join(dir, "sessions")
+	entries, err := os.ReadDir(sessDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	activeIDs := make(map[string]bool)
+
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".json")
+		activeIDs[id] = true
+
+		cacheMutex.RLock()
+		_, loaded := loadedSessions[id]
+		cacheMutex.RUnlock()
+
+		if !loaded {
+			s, err := session.Load(id)
+			if err == nil {
+				cacheMutex.Lock()
+				loadedSessions[id] = s
+				cacheMutex.Unlock()
+			}
+		}
+	}
+
+	logDir := filepath.Join(dir, "logs")
+	logEntries, err := os.ReadDir(logDir)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	for _, e := range logEntries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".log" {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".log")
+		activeIDs[id] = true
+
+		cacheMutex.RLock()
+		_, loaded := loadedSessions[id]
+		cacheMutex.RUnlock()
+
+		if !loaded {
+			s, err := session.Load(id)
+			if err == nil {
+				cacheMutex.Lock()
+				loadedSessions[id] = s
+				cacheMutex.Unlock()
+			}
+		}
+	}
+
+	cacheMutex.Lock()
+	for id := range loadedSessions {
+		if !activeIDs[id] {
+			delete(loadedSessions, id)
+			delete(sessionCache, id)
+		}
+	}
+
+	result := make([]*session.Session, 0, len(loadedSessions))
+	for _, s := range loadedSessions {
+		result = append(result, s)
+	}
+	cacheMutex.Unlock()
+
+	return result, nil
+}
+
 func handleSessions(w http.ResponseWriter, r *http.Request) {
-	sessions, err := session.List()
+	sessions, err := listSessionsFast()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -192,6 +278,16 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 
 	apiSessions := make([]APISession, 0, len(sessions))
 	for _, s := range sessions {
+		// Try to read from cache if it is completed
+		cacheMutex.RLock()
+		cached, exists := sessionCache[s.ID]
+		cacheMutex.RUnlock()
+
+		if exists && cached.Status == "done" {
+			apiSessions = append(apiSessions, cached)
+			continue
+		}
+
 		running := tmux.SessionExists(s.TmuxSession)
 		status := "done"
 		if running {
@@ -209,7 +305,7 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 			state = "starting"
 		}
 
-		apiSessions = append(apiSessions, APISession{
+		apiSess := APISession{
 			ID:         s.ID,
 			Name:       s.Name,
 			Model:      s.Model,
@@ -221,7 +317,16 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 			TotalCost:  stats.TotalCost,
 			LastState:  state,
 			LastDetail: detail,
-		})
+		}
+
+		// Cache if it is completed
+		if status == "done" {
+			cacheMutex.Lock()
+			sessionCache[s.ID] = apiSess
+			cacheMutex.Unlock()
+		}
+
+		apiSessions = append(apiSessions, apiSess)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

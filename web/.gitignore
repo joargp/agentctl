@@ -3,3 +3,4 @@ dashboard
 *.exe
 *.test
 *.prof
+*.log
