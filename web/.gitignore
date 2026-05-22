@@ -1,0 +1,5 @@
+# Compiled Go binaries
+dashboard
+*.exe
+*.test
+*.prof
