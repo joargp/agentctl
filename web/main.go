@@ -80,6 +80,73 @@ func readTail(path string, n int64) []byte {
 	return buf
 }
 
+func deriveLastActivity(logFile string, running bool) (string, string) {
+	data := readTail(logFile, 1024*1024)
+	if len(data) == 0 {
+		if running {
+			return "starting", ""
+		}
+		return "unknown", ""
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+
+	type activeTool struct {
+		name   string
+		detail string
+	}
+
+	activeTools := make(map[string]activeTool)
+	turnCount := 0
+	lastState := "unknown"
+	lastDetail := ""
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		activity := session.ParseActivityLine(line, &turnCount)
+		if activity.State != "" {
+			lastState = activity.State
+			lastDetail = activity.Detail
+		}
+
+		var event map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+
+		eventType, _ := event["type"].(string)
+		toolCallID, _ := event["toolCallId"].(string)
+		if toolCallID == "" {
+			continue
+		}
+
+		switch eventType {
+		case "tool_execution_start":
+			toolName, _ := event["toolName"].(string)
+			detail := ""
+			if args, ok := event["args"].(map[string]interface{}); ok {
+				if cmd, ok := args["command"].(string); ok {
+					detail = cmd
+				} else if path, ok := args["path"].(string); ok {
+					detail = path
+				}
+			}
+			activeTools[toolCallID] = activeTool{name: toolName, detail: detail}
+		case "tool_execution_end":
+			delete(activeTools, toolCallID)
+		}
+	}
+
+	if running && len(activeTools) > 0 {
+		for _, tool := range activeTools {
+			return "running " + tool.name, tool.detail
+		}
+	}
+
+	return lastState, lastDetail
+}
+
 func scanLogStats(logFile string) logStats {
 	f, err := os.Open(logFile)
 	if err != nil {
@@ -281,14 +348,7 @@ func startIndexingBackground() {
 						}
 
 						stats := getSessionLogStats(s, running)
-						state := "unknown"
-						detail := ""
-						data := readTail(s.LogFile, 64*1024)
-						if len(data) > 0 {
-							state, detail = session.ParseLastActivity(data)
-						} else if running {
-							state = "starting"
-						}
+						state, detail := deriveLastActivity(s.LogFile, running)
 
 						apiSess := APISession{
 							ID:         s.ID,
@@ -389,14 +449,7 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		stats := getSessionLogStats(s, running)
-		state := "unknown"
-		detail := ""
-		data := readTail(s.LogFile, 64*1024)
-		if len(data) > 0 {
-			state, detail = session.ParseLastActivity(data)
-		} else if running {
-			state = "starting"
-		}
+		state, detail := deriveLastActivity(s.LogFile, running)
 
 		apiSess := APISession{
 			ID:         s.ID,
