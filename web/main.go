@@ -152,6 +152,9 @@ func main() {
 	port := flag.Int("port", 8080, "port to run the server on")
 	flag.Parse()
 
+	// Start progressive background indexing
+	startIndexingBackground()
+
 	// 1. Root and Static Files Routes
 	http.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -187,7 +190,12 @@ func main() {
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
 
-func listSessionsFast() ([]*session.Session, error) {
+type sessionFile struct {
+	id      string
+	modTime time.Time
+}
+
+func getSessionFilesSorted() ([]sessionFile, error) {
 	dir, err := session.DataDir()
 	if err != nil {
 		return nil, err
@@ -199,26 +207,16 @@ func listSessionsFast() ([]*session.Session, error) {
 		return nil, err
 	}
 
-	activeIDs := make(map[string]bool)
+	filesMap := make(map[string]time.Time)
 
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".json")
-		activeIDs[id] = true
-
-		cacheMutex.RLock()
-		_, loaded := loadedSessions[id]
-		cacheMutex.RUnlock()
-
-		if !loaded {
-			s, err := session.Load(id)
-			if err == nil {
-				cacheMutex.Lock()
-				loadedSessions[id] = s
-				cacheMutex.Unlock()
-			}
+		info, err := e.Info()
+		if err == nil {
+			filesMap[id] = info.ModTime()
 		}
 	}
 
@@ -232,8 +230,127 @@ func listSessionsFast() ([]*session.Session, error) {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".log")
-		activeIDs[id] = true
+		info, err := e.Info()
+		if err == nil {
+			if t, ok := filesMap[id]; !ok || info.ModTime().After(t) {
+				filesMap[id] = info.ModTime()
+			}
+		}
+	}
 
+	var list []sessionFile
+	for id, t := range filesMap {
+		list = append(list, sessionFile{id: id, modTime: t})
+	}
+
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].modTime.After(list[j].modTime)
+	})
+
+	return list, nil
+}
+
+func startIndexingBackground() {
+	go func() {
+		// Wait a small moment to let server bind and satisfy first requests immediately
+		time.Sleep(1 * time.Second)
+
+		for {
+			sortedFiles, err := getSessionFilesSorted()
+			if err != nil {
+				time.Sleep(10 * time.Second)
+				continue
+			}
+
+			for _, sf := range sortedFiles {
+				cacheMutex.RLock()
+				_, loaded := loadedSessions[sf.id]
+				cacheMutex.RUnlock()
+
+				if !loaded {
+					s, err := session.Load(sf.id)
+					if err == nil {
+						cacheMutex.Lock()
+						loadedSessions[sf.id] = s
+						cacheMutex.Unlock()
+
+						running := tmux.SessionExists(s.TmuxSession)
+						status := "done"
+						if running {
+							status = "running"
+						}
+
+						stats := getSessionLogStats(s, running)
+						state := "unknown"
+						detail := ""
+						data := readTail(s.LogFile, 64*1024)
+						if len(data) > 0 {
+							state, detail = session.ParseLastActivity(data)
+						} else if running {
+							state = "starting"
+						}
+
+						apiSess := APISession{
+							ID:         s.ID,
+							Name:       s.Name,
+							Model:      s.Model,
+							Task:       s.Task,
+							Cwd:        s.Cwd,
+							StartedAt:  s.StartedAt,
+							Status:     status,
+							Turns:      stats.Turns,
+							TotalCost:  stats.TotalCost,
+							LastState:  state,
+							LastDetail: detail,
+						}
+
+						if status == "done" {
+							cacheMutex.Lock()
+							sessionCache[s.ID] = apiSess
+							cacheMutex.Unlock()
+						}
+					}
+					// Slight sleep to protect CPU cycles
+					time.Sleep(5 * time.Millisecond)
+				}
+			}
+
+			// Poll the directory structure every 30 seconds for external updates
+			time.Sleep(30 * time.Second)
+		}
+	}()
+}
+
+func handleSessions(w http.ResponseWriter, r *http.Request) {
+	sortedFiles, err := getSessionFilesSorted()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	activeIDs := make(map[string]bool)
+	for _, sf := range sortedFiles {
+		activeIDs[sf.id] = true
+	}
+
+	// Clean up deleted sessions
+	cacheMutex.Lock()
+	for id := range loadedSessions {
+		if !activeIDs[id] {
+			delete(loadedSessions, id)
+			delete(sessionCache, id)
+		}
+	}
+	cacheMutex.Unlock()
+
+	// Synchronously guarantee top 100 most recent sessions are loaded instantly
+	syncLimit := 100
+	if len(sortedFiles) < syncLimit {
+		syncLimit = len(sortedFiles)
+	}
+
+	for i := 0; i < syncLimit; i++ {
+		id := sortedFiles[i].id
 		cacheMutex.RLock()
 		_, loaded := loadedSessions[id]
 		cacheMutex.RUnlock()
@@ -248,43 +365,20 @@ func listSessionsFast() ([]*session.Session, error) {
 		}
 	}
 
-	cacheMutex.Lock()
-	for id := range loadedSessions {
-		if !activeIDs[id] {
-			delete(loadedSessions, id)
-			delete(sessionCache, id)
-		}
-	}
-
-	result := make([]*session.Session, 0, len(loadedSessions))
-	for _, s := range loadedSessions {
-		result = append(result, s)
-	}
-	cacheMutex.Unlock()
-
-	return result, nil
-}
-
-func handleSessions(w http.ResponseWriter, r *http.Request) {
-	sessions, err := listSessionsFast()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].StartedAt.After(sessions[j].StartedAt)
-	})
-
-	apiSessions := make([]APISession, 0, len(sessions))
-	for _, s := range sessions {
-		// Try to read from cache if it is completed
+	// Construct list from loaded sessions maintaining modTime sorting order
+	apiSessions := make([]APISession, 0)
+	for _, sf := range sortedFiles {
 		cacheMutex.RLock()
-		cached, exists := sessionCache[s.ID]
+		s, loaded := loadedSessions[sf.id]
+		cachedAPI, hasCachedAPI := sessionCache[sf.id]
 		cacheMutex.RUnlock()
 
-		if exists && cached.Status == "done" {
-			apiSessions = append(apiSessions, cached)
+		if !loaded {
+			continue // Skip if background thread hasn't gotten here yet
+		}
+
+		if hasCachedAPI && cachedAPI.Status == "done" {
+			apiSessions = append(apiSessions, cachedAPI)
 			continue
 		}
 
@@ -295,7 +389,6 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 
 		stats := getSessionLogStats(s, running)
-		
 		state := "unknown"
 		detail := ""
 		data := readTail(s.LogFile, 64*1024)
@@ -319,7 +412,6 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 			LastDetail: detail,
 		}
 
-		// Cache if it is completed
 		if status == "done" {
 			cacheMutex.Lock()
 			sessionCache[s.ID] = apiSess
