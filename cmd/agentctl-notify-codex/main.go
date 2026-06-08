@@ -18,7 +18,7 @@ import (
 
 const (
 	defaultCodexBin = "codex"
-	defaultTimeout  = 45 * time.Second
+	defaultTimeout  = 90 * time.Second
 )
 
 type completionPayload struct {

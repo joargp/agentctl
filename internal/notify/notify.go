@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-const commandNotifierTimeout = 60 * time.Second
+const commandNotifierTimeout = 120 * time.Second
 const commandNotifierOutputLimit = 4096
 
 type sendCmd struct {
