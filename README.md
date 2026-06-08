@@ -137,11 +137,13 @@ This repo includes an external Codex notifier binary. Install it separately:
 go install github.com/joargp/agentctl/cmd/agentctl-notify-codex@latest
 ```
 
-Then invoke it by explicit path. From inside a Codex thread, `CODEX_THREAD_ID`
-is usually already present:
+Then invoke it by explicit path. From inside a Codex thread, pass the current
+thread ID through `AGENTCTL_CODEX_THREAD_ID` so the detached watcher has an
+explicit target:
 
 ```bash
-id=$(agentctl run \
+id=$(AGENTCTL_CODEX_THREAD_ID="$CODEX_THREAD_ID" \
+  agentctl run \
   --model claude-opus-4-6 \
   --task "..." \
   --notify-command "$(command -v agentctl-notify-codex)" \
@@ -262,7 +264,7 @@ Pi runs in JSON mode, producing streaming NDJSON events (text deltas, tool calls
 
 When pi exits the supervisor tears down the rest of the agent's process tree and the tmux session is destroyed automatically, flipping the session status to `done`.
 
-When `--notify-session`, `--notify-munin`, or `--notify-event-dir` is set, `agentctl` also spawns a detached watcher process that waits for the tmux session to disappear and then sends the configured completion notification(s).
+When `--notify-session`, `--notify-munin`, `--notify-event-dir`, or `--notify-command` is set, `agentctl` also spawns a detached watcher process that waits for the tmux session to disappear and then sends the configured completion notification(s). Detached watcher stdout/stderr is written to `<logfile>.watch.log`, for example `~/.local/share/agentctl/logs/abc12345.watch.log`.
 
 Session metadata is stored in `~/.local/share/agentctl/sessions/`. Log files live in `~/.local/share/agentctl/logs/` and survive `kill`. Runtime PID/PGID state is stored in `~/.local/share/agentctl/runtime/` while a session is active and is removed on successful cleanup.
 

@@ -369,12 +369,30 @@ func spawnWatcher(agentID string, options watcherNotifyOptions) error {
 		return fmt.Errorf("resolve executable: %w", err)
 	}
 
+	logFile, err := watcherLogFile(agentID)
+	if err != nil {
+		return fmt.Errorf("resolve watcher log file: %w", err)
+	}
+	log, err := os.OpenFile(logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("open watcher log file: %w", err)
+	}
+	defer log.Close()
+
 	cmd := exec.Command(self, watcherArgs(agentID, options)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // detach from parent process group
 	cmd.Stdin = nil
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stdout = log
+	cmd.Stderr = log
 	return cmd.Start()
+}
+
+func watcherLogFile(agentID string) (string, error) {
+	dataDir, err := session.DataDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dataDir, "logs", agentID+".watch.log"), nil
 }
 
 func watcherArgs(agentID string, options watcherNotifyOptions) []string {
