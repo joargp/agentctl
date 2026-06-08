@@ -75,7 +75,12 @@ func TestRunSendsMessageToCodexAppServer(t *testing.T) {
 			params := msg["params"].(map[string]any)
 			input := params["input"].([]any)
 			first := input[0].(map[string]any)
-			if params["threadId"] == "thread-123" && first["type"] == "text" && first["text"] == "Agent finished." {
+			textElements, hasTextElements := first["text_elements"].([]any)
+			if params["threadId"] == "thread-123" &&
+				first["type"] == "text" &&
+				first["text"] == "Agent finished." &&
+				hasTextElements &&
+				len(textElements) == 0 {
 				sawTurn = true
 			}
 		}
@@ -118,7 +123,7 @@ func TestRunReturnsCodexTurnFailure(t *testing.T) {
 	}
 }
 
-func TestRunDoesNotWaitForTurnCompletion(t *testing.T) {
+func TestRunWaitsForTurnCompletion(t *testing.T) {
 	dir := t.TempDir()
 	fakeCodex := writeFakeCodex(t, dir, filepath.Join(dir, "calls.jsonl"), fakeCodexOptions{omitTurnCompleted: true})
 
@@ -140,8 +145,11 @@ func TestRunDoesNotWaitForTurnCompletion(t *testing.T) {
 			}
 		},
 	)
-	if err != nil {
-		t.Fatalf("run returned error despite accepted turn/start: %v", err)
+	if err == nil {
+		t.Fatal("expected missing turn/completed to return an error")
+	}
+	if !strings.Contains(err.Error(), "wait for turn/completed") {
+		t.Fatalf("expected wait for turn/completed error, got %v", err)
 	}
 }
 

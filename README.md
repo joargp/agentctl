@@ -151,7 +151,7 @@ id=$(AGENTCTL_CODEX_THREAD_ID="$CODEX_THREAD_ID" \
 ```
 
 The notifier starts `codex app-server`, resumes the target thread, sends the
-completion message with `turn/start`, and exits once Codex accepts the turn.
+completion message with `turn/start`, and exits after Codex completes the turn.
 Configuration is environment-only because `--notify-command` accepts a single
 executable path:
 
@@ -159,7 +159,7 @@ executable path:
 - `CODEX_THREAD_ID` is used when `AGENTCTL_CODEX_THREAD_ID` is unset.
 - `AGENTCTL_CODEX_BIN` overrides the `codex` binary path.
 - `AGENTCTL_CODEX_TIMEOUT_SECONDS` overrides the notifier's internal timeout
-  (default: 8 seconds). Keep it below `agentctl`'s command notifier timeout
+  (default: 45 seconds). Keep it below `agentctl`'s command notifier timeout
   unless you invoke `agentctl-notify-codex` directly.
 
 To target a specific Codex thread explicitly:
@@ -264,7 +264,7 @@ Pi runs in JSON mode, producing streaming NDJSON events (text deltas, tool calls
 
 When pi exits the supervisor tears down the rest of the agent's process tree and the tmux session is destroyed automatically, flipping the session status to `done`.
 
-When `--notify-session`, `--notify-munin`, `--notify-event-dir`, or `--notify-command` is set, `agentctl` also spawns a detached watcher process that waits for the tmux session to disappear and then sends the configured completion notification(s). Detached watcher stdout/stderr is written to `<logfile>.watch.log`, for example `~/.local/share/agentctl/logs/abc12345.watch.log`.
+When `--notify-session`, `--notify-munin`, `--notify-event-dir`, or `--notify-command` is set, `agentctl` also spawns a detached watcher process that waits for the tmux session to disappear and then sends the configured completion notification(s). Executable notifiers have a 60 second timeout. Detached watcher stdout/stderr is written to `<logfile>.watch.log`, for example `~/.local/share/agentctl/logs/abc12345.watch.log`.
 
 Session metadata is stored in `~/.local/share/agentctl/sessions/`. Log files live in `~/.local/share/agentctl/logs/` and survive `kill`. Runtime PID/PGID state is stored in `~/.local/share/agentctl/runtime/` while a session is active and is removed on successful cleanup.
 

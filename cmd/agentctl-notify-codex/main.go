@@ -18,7 +18,7 @@ import (
 
 const (
 	defaultCodexBin = "codex"
-	defaultTimeout  = 8 * time.Second
+	defaultTimeout  = 45 * time.Second
 )
 
 type completionPayload struct {
@@ -97,7 +97,11 @@ func run(parent context.Context, stdin io.Reader, stdout io.Writer, stderr io.Wr
 	if err := client.resumeThread(ctx, threadID); err != nil {
 		return err
 	}
-	if err := client.startTurn(ctx, threadID, payload.Message); err != nil {
+	turnID, err := client.startTurn(ctx, threadID, payload.Message)
+	if err != nil {
+		return err
+	}
+	if err := client.waitForTurnCompleted(ctx, threadID, turnID); err != nil {
 		return err
 	}
 
@@ -185,15 +189,15 @@ func (c *rpcClient) resumeThread(ctx context.Context, threadID string) error {
 	return err
 }
 
-func (c *rpcClient) startTurn(ctx context.Context, threadID, message string) error {
+func (c *rpcClient) startTurn(ctx context.Context, threadID, message string) (string, error) {
 	result, err := c.call(ctx, "turn/start", map[string]any{
 		"threadId": threadID,
-		"input": []map[string]string{
-			{"type": "text", "text": message},
+		"input": []map[string]any{
+			{"type": "text", "text": message, "text_elements": []any{}},
 		},
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
 	var parsed struct {
 		Turn struct {
@@ -201,12 +205,47 @@ func (c *rpcClient) startTurn(ctx context.Context, threadID, message string) err
 		} `json:"turn"`
 	}
 	if err := json.Unmarshal(result, &parsed); err != nil {
-		return fmt.Errorf("decode turn/start result: %w", err)
+		return "", fmt.Errorf("decode turn/start result: %w", err)
 	}
 	if parsed.Turn.ID == "" {
-		return fmt.Errorf("turn/start response did not include turn id")
+		return "", fmt.Errorf("turn/start response did not include turn id")
 	}
-	return nil
+	return parsed.Turn.ID, nil
+}
+
+func (c *rpcClient) waitForTurnCompleted(ctx context.Context, threadID, turnID string) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for turn/completed %s: %w", turnID, ctx.Err())
+		case err := <-c.errs:
+			return err
+		case event := <-c.events:
+			if event.Method != "turn/completed" {
+				continue
+			}
+			var params struct {
+				ThreadID string `json:"threadId"`
+				Turn     struct {
+					ID     string `json:"id"`
+					Status string `json:"status"`
+					Error  *struct {
+						Message string `json:"message"`
+					} `json:"error"`
+				} `json:"turn"`
+			}
+			if err := json.Unmarshal(event.Params, &params); err != nil {
+				return fmt.Errorf("decode turn/completed event: %w", err)
+			}
+			if params.ThreadID != threadID || params.Turn.ID != turnID {
+				continue
+			}
+			if params.Turn.Error != nil {
+				return fmt.Errorf("codex turn %s failed: %s", turnID, params.Turn.Error.Message)
+			}
+			return nil
+		}
+	}
 }
 
 func (c *rpcClient) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
