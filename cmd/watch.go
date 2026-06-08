@@ -30,6 +30,7 @@ var (
 	watchNotifyEventDir     string
 	watchNotifyEventChannel string
 	watchNotifyEventThread  string
+	watchNotifyCommands     []string
 	watchProgress           bool
 )
 
@@ -38,6 +39,7 @@ func init() {
 	watchCmd.Flags().StringVar(&watchNotifyEventDir, "notify-event-dir", "", "directory to write a completion event JSON file to")
 	watchCmd.Flags().StringVar(&watchNotifyEventChannel, "notify-event-channel", "", "channel ID to include in the completion event")
 	watchCmd.Flags().StringVar(&watchNotifyEventThread, "notify-event-thread", "", "optional thread ts to include in the completion event")
+	watchCmd.Flags().StringArrayVar(&watchNotifyCommands, "notify-command", nil, "executable path to invoke with completion JSON on stdin")
 	watchCmd.Flags().BoolVar(&watchProgress, "progress", false, "emit progress events while waiting for completion")
 	rootCmd.AddCommand(watchCmd)
 }
@@ -48,6 +50,7 @@ func runWatch(_ *cobra.Command, args []string) error {
 		EventDir:     watchNotifyEventDir,
 		EventChannel: watchNotifyEventChannel,
 		EventThread:  watchNotifyEventThread,
+		Commands:     append([]string(nil), watchNotifyCommands...),
 		Progress:     watchProgress,
 	}
 	if err := validateWatcherNotifyOptions(notifyOptions); err != nil {
@@ -109,6 +112,13 @@ func runWatch(_ *cobra.Command, args []string) error {
 		}
 	}
 
+	if len(notifyOptions.Commands) > 0 {
+		payload := completionCommandPayload(s, message)
+		if err := notify.SendCompletionCommands(notifyOptions.Commands, payload); err != nil {
+			errs = append(errs, fmt.Errorf("command notify failed: %w", err))
+		}
+	}
+
 	if notifyOptions.EventDir != "" {
 		if err := notify.CleanupProgressFiles(notifyOptions.EventDir, s.ID); err != nil {
 			errs = append(errs, fmt.Errorf("cleanup progress files failed: %w", err))
@@ -143,6 +153,26 @@ func runWatch(_ *cobra.Command, args []string) error {
 		os.Exit(1)
 	}
 	return nil
+}
+
+func completionCommandPayload(s *session.Session, message string) notify.CompletionCommandPayload {
+	return notify.CompletionCommandPayload{
+		SchemaVersion: 1,
+		Event:         "session.completed",
+		Session: notify.CompletionCommandSession{
+			ID:        s.ID,
+			Name:      s.Name,
+			Model:     s.Model,
+			Task:      s.Task,
+			Cwd:       s.Cwd,
+			StartedAt: s.StartedAt,
+			LogFile:   s.LogFile,
+			Turns:     s.Turns,
+			TotalCost: s.TotalCost,
+		},
+		Message:     message,
+		DumpCommand: fmt.Sprintf("agentctl dump %s", s.ID),
+	}
 }
 
 type progressTailer struct {

@@ -5,15 +5,22 @@
 package notify
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+const commandNotifierTimeout = 10 * time.Second
+const commandNotifierOutputLimit = 4096
 
 type sendCmd struct {
 	Type    string `json:"type"`
@@ -29,6 +36,29 @@ type eventFile struct {
 	SubagentID string            `json:"subagentId,omitempty"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
 	Replace    bool              `json:"replace,omitempty"`
+}
+
+// CompletionCommandPayload is the stable JSON payload sent to executable
+// completion notifiers over stdin.
+type CompletionCommandPayload struct {
+	SchemaVersion int                      `json:"schemaVersion"`
+	Event         string                   `json:"event"`
+	Session       CompletionCommandSession `json:"session"`
+	Message       string                   `json:"message"`
+	DumpCommand   string                   `json:"dumpCommand"`
+}
+
+// CompletionCommandSession contains session metadata for command notifiers.
+type CompletionCommandSession struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name,omitempty"`
+	Model     string    `json:"model"`
+	Task      string    `json:"task"`
+	Cwd       string    `json:"cwd"`
+	StartedAt time.Time `json:"startedAt"`
+	LogFile   string    `json:"logFile"`
+	Turns     int       `json:"turns"`
+	TotalCost float64   `json:"totalCost"`
 }
 
 // ImmediateEvent describes a file-based immediate event notification.
@@ -210,6 +240,127 @@ func CleanupProgressFiles(dir, subagentID string) error {
 	}
 	return nil
 }
+
+// SendCompletionCommand invokes an executable notifier with the completion
+// payload on stdin. The command is executed directly without shell expansion.
+func SendCompletionCommand(command string, payload CompletionCommandPayload) error {
+	return SendCompletionCommandWithTimeout(command, payload, commandNotifierTimeout)
+}
+
+// SendCompletionCommands invokes every command and returns the joined failures.
+func SendCompletionCommands(commands []string, payload CompletionCommandPayload) error {
+	var errs []error
+	for _, command := range commands {
+		if err := SendCompletionCommand(command, payload); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+// SendCompletionCommandWithTimeout is exported for tests and callers that need
+// tighter control over notifier runtime.
+func SendCompletionCommandWithTimeout(command string, payload CompletionCommandPayload, timeout time.Duration) error {
+	if err := ValidateCompletionCommand(command); err != nil {
+		return err
+	}
+	if timeout <= 0 {
+		timeout = commandNotifierTimeout
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal completion notifier payload: %w", err)
+	}
+	data = append(data, '\n')
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, command)
+	cmd.Stdin = bytes.NewReader(data)
+	stdout := &limitedBuffer{limit: commandNotifierOutputLimit}
+	stderr := &limitedBuffer{limit: commandNotifierOutputLimit}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	err = cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("completion notifier %s timed out after %s%s", command, timeout, notifierOutputSuffix(stdout, stderr))
+	}
+	if err != nil {
+		return fmt.Errorf("completion notifier %s failed: %w%s", command, err, notifierOutputSuffix(stdout, stderr))
+	}
+	return nil
+}
+
+// ValidateCompletionCommand ensures v1 notifier commands are explicit paths and
+// not implicit PATH lookups or shell command strings.
+func ValidateCompletionCommand(command string) error {
+	if strings.TrimSpace(command) == "" {
+		return fmt.Errorf("--notify-command cannot be empty")
+	}
+	if strings.ContainsRune(command, '\x00') {
+		return fmt.Errorf("--notify-command cannot contain NUL bytes")
+	}
+	if strings.ContainsAny(command, " \t\r\n") {
+		return fmt.Errorf("--notify-command must be a single executable path without arguments: %s", command)
+	}
+	if !strings.Contains(command, "/") && !strings.Contains(command, `\`) {
+		return fmt.Errorf("--notify-command must be an explicit executable path, not a PATH lookup: %s", command)
+	}
+	return nil
+}
+
+func notifierOutputSuffix(stdout, stderr *limitedBuffer) string {
+	var parts []string
+	if out := strings.TrimSpace(stdout.String()); out != "" {
+		parts = append(parts, "stdout: "+out)
+	}
+	if err := strings.TrimSpace(stderr.String()); err != "" {
+		parts = append(parts, "stderr: "+err)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, "; ") + ")"
+}
+
+type limitedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		return len(p), nil
+	}
+	remaining := b.limit - b.buf.Len()
+	if remaining <= 0 {
+		b.truncated = true
+		return len(p), nil
+	}
+	if len(p) > remaining {
+		_, _ = b.buf.Write(p[:remaining])
+		b.truncated = true
+		return len(p), nil
+	}
+	return b.buf.Write(p)
+}
+
+func (b *limitedBuffer) String() string {
+	s := b.buf.String()
+	if b.truncated {
+		s += "...[truncated]"
+	}
+	return s
+}
+
+var _ io.Writer = (*limitedBuffer)(nil)
 
 func writeEventFile(dir, base string, data []byte) error {
 	tmpPath := filepath.Join(dir, "."+base+".tmp")

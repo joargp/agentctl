@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joargp/agentctl/internal/notify"
 	"github.com/joargp/agentctl/internal/session"
 	"github.com/joargp/agentctl/internal/tmux"
 	"github.com/spf13/cobra"
@@ -42,6 +43,7 @@ type watcherNotifyOptions struct {
 	EventChannel string
 	EventThread  string
 	Progress     bool
+	Commands     []string
 }
 
 var (
@@ -57,6 +59,7 @@ var (
 	runNotifyEventDir     string
 	runNotifyEventChannel string
 	runNotifyEventThread  string
+	runNotifyCommands     []string
 )
 
 func init() {
@@ -77,6 +80,8 @@ func init() {
 		"channel ID to include in the completion event (requires --notify-event-dir)")
 	runCmd.Flags().StringVar(&runNotifyEventThread, "notify-event-thread", "",
 		"optional thread ts to include in the completion event (requires --notify-event-dir)")
+	runCmd.Flags().StringArrayVar(&runNotifyCommands, "notify-command", nil,
+		"executable path to invoke with completion JSON on stdin when the agent finishes (repeatable)")
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -199,6 +204,9 @@ func runRun(_ *cobra.Command, _ []string) error {
 	if notifyOptions.EventDir != "" {
 		fmt.Fprintf(os.Stderr, "Notify:      event dir %s (channel %s)\n", notifyOptions.EventDir, notifyOptions.EventChannel)
 	}
+	for _, command := range notifyOptions.Commands {
+		fmt.Fprintf(os.Stderr, "Notify:      command %s\n", command)
+	}
 
 	if runWait {
 		fmt.Fprintln(os.Stderr, "\nWaiting for agent to finish...")
@@ -285,7 +293,7 @@ exec %s supervise%s %s
 }
 
 func resolveWatcherNotifyOptions(notifyMunin bool, getenv func(string) string) (watcherNotifyOptions, error) {
-	hasExplicitNotifier := notifyMunin || runNotifySession != "" || runNotifyEventDir != "" || runNotifyEventChannel != "" || runNotifyEventThread != ""
+	hasExplicitNotifier := notifyMunin || runNotifySession != "" || runNotifyEventDir != "" || runNotifyEventChannel != "" || runNotifyEventThread != "" || len(runNotifyCommands) > 0
 
 	notifySession := runNotifySession
 	if notifySession == "" && !hasExplicitNotifier {
@@ -297,6 +305,7 @@ func resolveWatcherNotifyOptions(notifyMunin bool, getenv func(string) string) (
 		EventDir:     runNotifyEventDir,
 		EventChannel: runNotifyEventChannel,
 		EventThread:  runNotifyEventThread,
+		Commands:     append([]string(nil), runNotifyCommands...),
 	}
 
 	if notifyMunin {
@@ -338,12 +347,17 @@ func validateWatcherNotifyOptions(options watcherNotifyOptions) error {
 	if hasEventDir && !hasEventChannel {
 		return fmt.Errorf("--notify-event-dir requires --notify-event-channel")
 	}
+	for _, command := range options.Commands {
+		if err := notify.ValidateCompletionCommand(command); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
 
 func hasWatcherNotifications(options watcherNotifyOptions) bool {
-	return options.PiSessionID != "" || options.EventDir != ""
+	return options.PiSessionID != "" || options.EventDir != "" || len(options.Commands) > 0
 }
 
 // spawnWatcher starts a detached 'agentctl watch' process that notifies
@@ -379,6 +393,9 @@ func watcherArgs(agentID string, options watcherNotifyOptions) []string {
 	}
 	if options.Progress {
 		args = append(args, "--progress")
+	}
+	for _, command := range options.Commands {
+		args = append(args, "--notify-command", command)
 	}
 	return args
 }

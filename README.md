@@ -87,6 +87,89 @@ id=$(agentctl run \
 
 This writes an `immediate` event JSON file when the agent completes.
 
+#### Run an executable notifier
+
+Use `--notify-command` to invoke an executable with completion JSON on stdin:
+
+```bash
+id=$(agentctl run \
+  --model openai/gpt-5.4 \
+  --task "..." \
+  --notify-command ./scripts/agentctl-notify-codex \
+  2>/dev/null)
+```
+
+The command value must be one explicit executable path, such as `./notify` or
+`/usr/local/bin/notify`. Bare command names and command strings with arguments
+are rejected; `agentctl` does not look up notifier commands from `$PATH` and
+does not run them through a shell.
+
+Notifier commands inherit the watcher environment and receive this payload:
+
+```json
+{
+  "schemaVersion": 1,
+  "event": "session.completed",
+  "session": {
+    "id": "abc12345",
+    "name": "optional-name",
+    "model": "claude-opus-4-6",
+    "task": "original task",
+    "cwd": "/repo/path",
+    "startedAt": "2026-06-08T12:00:00Z",
+    "logFile": "/Users/me/.local/share/agentctl/logs/abc12345.log",
+    "turns": 3,
+    "totalCost": 0.03
+  },
+  "message": "Agent **claude-opus-4-6** (`abc12345`) finished...",
+  "dumpCommand": "agentctl dump abc12345"
+}
+```
+
+`agentctl` does not depend on Codex. Codex, Slack, or other integrations should
+live in notifier executables that consume this payload.
+
+#### Codex notifier
+
+This repo includes an external Codex notifier binary. Install it separately:
+
+```bash
+go install github.com/joargp/agentctl/cmd/agentctl-notify-codex@latest
+```
+
+Then invoke it by explicit path. From inside a Codex thread, `CODEX_THREAD_ID`
+is usually already present:
+
+```bash
+id=$(agentctl run \
+  --model claude-opus-4-6 \
+  --task "..." \
+  --notify-command "$(command -v agentctl-notify-codex)" \
+  2>/dev/null)
+```
+
+The notifier starts `codex app-server`, resumes the target thread, sends the
+completion message with `turn/start`, and exits once Codex accepts the turn.
+Configuration is environment-only because `--notify-command` accepts a single
+executable path:
+
+- `AGENTCTL_CODEX_THREAD_ID` overrides the target thread.
+- `CODEX_THREAD_ID` is used when `AGENTCTL_CODEX_THREAD_ID` is unset.
+- `AGENTCTL_CODEX_BIN` overrides the `codex` binary path.
+- `AGENTCTL_CODEX_TIMEOUT_SECONDS` overrides the notifier's internal timeout
+  (default: 8 seconds). Keep it below `agentctl`'s command notifier timeout
+  unless you invoke `agentctl-notify-codex` directly.
+
+To target a specific Codex thread explicitly:
+
+```bash
+AGENTCTL_CODEX_THREAD_ID=019ea641-f54e-7c20-ab26-0edfcd41445b \
+  agentctl run \
+    --model claude-opus-4-6 \
+    --task "..." \
+    --notify-command "$(command -v agentctl-notify-codex)"
+```
+
 ### Provider syntax
 
 Use `provider/model` when a model name is ambiguous across providers:

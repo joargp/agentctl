@@ -12,17 +12,20 @@ func TestResolveWatcherNotifyOptionsNotifyMuninUsesEnv(t *testing.T) {
 	prevEventDir := runNotifyEventDir
 	prevEventChannel := runNotifyEventChannel
 	prevEventThread := runNotifyEventThread
+	prevCommands := runNotifyCommands
 	defer func() {
 		runNotifySession = prevSession
 		runNotifyEventDir = prevEventDir
 		runNotifyEventChannel = prevEventChannel
 		runNotifyEventThread = prevEventThread
+		runNotifyCommands = prevCommands
 	}()
 
 	runNotifySession = ""
 	runNotifyEventDir = ""
 	runNotifyEventChannel = ""
 	runNotifyEventThread = ""
+	runNotifyCommands = nil
 
 	env := map[string]string{
 		piSessionIDEnv:    "session-123",
@@ -55,17 +58,20 @@ func TestResolveWatcherNotifyOptionsNotifyMuninExplicitFlagsOverrideEnv(t *testi
 	prevEventDir := runNotifyEventDir
 	prevEventChannel := runNotifyEventChannel
 	prevEventThread := runNotifyEventThread
+	prevCommands := runNotifyCommands
 	defer func() {
 		runNotifySession = prevSession
 		runNotifyEventDir = prevEventDir
 		runNotifyEventChannel = prevEventChannel
 		runNotifyEventThread = prevEventThread
+		runNotifyCommands = prevCommands
 	}()
 
 	runNotifySession = ""
 	runNotifyEventDir = "/custom/events"
 	runNotifyEventChannel = "C999"
 	runNotifyEventThread = "222.333"
+	runNotifyCommands = nil
 
 	env := map[string]string{
 		muninEventsDirEnv: "/workspace/events",
@@ -88,17 +94,20 @@ func TestResolveWatcherNotifyOptionsNotifyMuninRequiresContext(t *testing.T) {
 	prevEventDir := runNotifyEventDir
 	prevEventChannel := runNotifyEventChannel
 	prevEventThread := runNotifyEventThread
+	prevCommands := runNotifyCommands
 	defer func() {
 		runNotifySession = prevSession
 		runNotifyEventDir = prevEventDir
 		runNotifyEventChannel = prevEventChannel
 		runNotifyEventThread = prevEventThread
+		runNotifyCommands = prevCommands
 	}()
 
 	runNotifySession = ""
 	runNotifyEventDir = ""
 	runNotifyEventChannel = ""
 	runNotifyEventThread = ""
+	runNotifyCommands = nil
 
 	_, err := resolveWatcherNotifyOptions(true, func(string) string { return "" })
 	if err == nil {
@@ -111,17 +120,20 @@ func TestResolveWatcherNotifyOptionsFallsBackToPiSessionOnlyWhenNoExplicitNotifi
 	prevEventDir := runNotifyEventDir
 	prevEventChannel := runNotifyEventChannel
 	prevEventThread := runNotifyEventThread
+	prevCommands := runNotifyCommands
 	defer func() {
 		runNotifySession = prevSession
 		runNotifyEventDir = prevEventDir
 		runNotifyEventChannel = prevEventChannel
 		runNotifyEventThread = prevEventThread
+		runNotifyCommands = prevCommands
 	}()
 
 	runNotifySession = ""
 	runNotifyEventDir = ""
 	runNotifyEventChannel = ""
 	runNotifyEventThread = ""
+	runNotifyCommands = nil
 
 	options, err := resolveWatcherNotifyOptions(false, func(key string) string {
 		if key == piSessionIDEnv {
@@ -142,17 +154,20 @@ func TestResolveWatcherNotifyOptionsExplicitEventNotifierSuppressesPiSessionFall
 	prevEventDir := runNotifyEventDir
 	prevEventChannel := runNotifyEventChannel
 	prevEventThread := runNotifyEventThread
+	prevCommands := runNotifyCommands
 	defer func() {
 		runNotifySession = prevSession
 		runNotifyEventDir = prevEventDir
 		runNotifyEventChannel = prevEventChannel
 		runNotifyEventThread = prevEventThread
+		runNotifyCommands = prevCommands
 	}()
 
 	runNotifySession = ""
 	runNotifyEventDir = "/workspace/events"
 	runNotifyEventChannel = "C123"
 	runNotifyEventThread = ""
+	runNotifyCommands = nil
 
 	options, err := resolveWatcherNotifyOptions(false, func(key string) string {
 		if key == piSessionIDEnv {
@@ -165,6 +180,72 @@ func TestResolveWatcherNotifyOptionsExplicitEventNotifierSuppressesPiSessionFall
 	}
 	if options.PiSessionID != "" {
 		t.Fatalf("expected explicit event notifier to suppress PI_SESSION_ID fallback, got %q", options.PiSessionID)
+	}
+}
+
+func TestResolveWatcherNotifyOptionsNotifyCommandSuppressesPiSessionFallback(t *testing.T) {
+	prevSession := runNotifySession
+	prevEventDir := runNotifyEventDir
+	prevEventChannel := runNotifyEventChannel
+	prevEventThread := runNotifyEventThread
+	prevCommands := runNotifyCommands
+	defer func() {
+		runNotifySession = prevSession
+		runNotifyEventDir = prevEventDir
+		runNotifyEventChannel = prevEventChannel
+		runNotifyEventThread = prevEventThread
+		runNotifyCommands = prevCommands
+	}()
+
+	runNotifySession = ""
+	runNotifyEventDir = ""
+	runNotifyEventChannel = ""
+	runNotifyEventThread = ""
+	runNotifyCommands = []string{"./notify-test"}
+
+	options, err := resolveWatcherNotifyOptions(false, func(key string) string {
+		if key == piSessionIDEnv {
+			return "session-123"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("resolveWatcherNotifyOptions returned error: %v", err)
+	}
+	if options.PiSessionID != "" {
+		t.Fatalf("expected notify command to suppress PI_SESSION_ID fallback, got %q", options.PiSessionID)
+	}
+	if len(options.Commands) != 1 || options.Commands[0] != "./notify-test" {
+		t.Fatalf("expected notify command to round-trip, got %#v", options.Commands)
+	}
+}
+
+func TestResolveWatcherNotifyOptionsRejectsInvalidNotifyCommand(t *testing.T) {
+	prevSession := runNotifySession
+	prevEventDir := runNotifyEventDir
+	prevEventChannel := runNotifyEventChannel
+	prevEventThread := runNotifyEventThread
+	prevCommands := runNotifyCommands
+	defer func() {
+		runNotifySession = prevSession
+		runNotifyEventDir = prevEventDir
+		runNotifyEventChannel = prevEventChannel
+		runNotifyEventThread = prevEventThread
+		runNotifyCommands = prevCommands
+	}()
+
+	runNotifySession = ""
+	runNotifyEventDir = ""
+	runNotifyEventChannel = ""
+	runNotifyEventThread = ""
+	runNotifyCommands = []string{"notify-test"}
+
+	_, err := resolveWatcherNotifyOptions(false, func(string) string { return "" })
+	if err == nil {
+		t.Fatal("expected invalid notify command to be rejected")
+	}
+	if !strings.Contains(err.Error(), "explicit executable path") {
+		t.Fatalf("expected explicit path error, got %v", err)
 	}
 }
 
@@ -182,6 +263,26 @@ func TestWatcherArgsIncludesProgressFlag(t *testing.T) {
 		"--notify-event-channel", "C123",
 		"--notify-event-thread", "1710000000.000100",
 		"--progress",
+	}
+	if len(args) != len(expected) {
+		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)
+	}
+	for i := range expected {
+		if args[i] != expected[i] {
+			t.Fatalf("expected args[%d] = %q, got %q (all args: %v)", i, expected[i], args[i], args)
+		}
+	}
+}
+
+func TestWatcherArgsIncludesNotifyCommands(t *testing.T) {
+	args := watcherArgs("abc123", watcherNotifyOptions{
+		Commands: []string{"./notify-a", "/tmp/notify-b"},
+	})
+
+	expected := []string{
+		"watch", "abc123",
+		"--notify-command", "./notify-a",
+		"--notify-command", "/tmp/notify-b",
 	}
 	if len(args) != len(expected) {
 		t.Fatalf("expected %d args, got %d: %v", len(expected), len(args), args)

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWriteImmediateEvent(t *testing.T) {
@@ -167,4 +168,152 @@ func TestCleanupProgressFiles(t *testing.T) {
 	if !remaining["agentctl-done-4-4.json"] {
 		t.Fatalf("expected done event to remain, remaining=%v", remaining)
 	}
+}
+
+func TestSendCompletionCommandWritesPayloadToStdin(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "payload.json")
+	command := writeNotifierScript(t, dir, "capture.sh", `#!/bin/sh
+cat > "$AGENTCTL_NOTIFY_OUT"
+`)
+	t.Setenv("AGENTCTL_NOTIFY_OUT", outPath)
+
+	payload := CompletionCommandPayload{
+		SchemaVersion: 1,
+		Event:         "session.completed",
+		Session: CompletionCommandSession{
+			ID:        "abc12345",
+			Model:     "claude-opus-4-6",
+			Task:      "original task",
+			Cwd:       "/repo/path",
+			StartedAt: time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC),
+			LogFile:   "/tmp/abc12345.log",
+			Turns:     3,
+			TotalCost: 0.03,
+		},
+		Message:     "Agent finished.",
+		DumpCommand: "agentctl dump abc12345",
+	}
+	if err := SendCompletionCommand(command, payload); err != nil {
+		t.Fatalf("SendCompletionCommand returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("ReadFile returned error: %v", err)
+	}
+	var got CompletionCommandPayload
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal returned error: %v", err)
+	}
+	if got.SchemaVersion != 1 || got.Event != "session.completed" {
+		t.Fatalf("unexpected payload header: %+v", got)
+	}
+	if got.Session.ID != "abc12345" || got.Session.Turns != 3 || got.Session.TotalCost != 0.03 {
+		t.Fatalf("unexpected session payload: %+v", got.Session)
+	}
+	if got.Message != "Agent finished." || got.DumpCommand != "agentctl dump abc12345" {
+		t.Fatalf("unexpected message fields: %+v", got)
+	}
+}
+
+func TestSendCompletionCommandOmitsEmptyName(t *testing.T) {
+	data, err := json.Marshal(CompletionCommandPayload{
+		SchemaVersion: 1,
+		Event:         "session.completed",
+		Session: CompletionCommandSession{
+			ID:        "abc12345",
+			Model:     "model",
+			StartedAt: time.Date(2026, 6, 8, 12, 0, 0, 0, time.UTC),
+		},
+	})
+	if err != nil {
+		t.Fatalf("Marshal returned error: %v", err)
+	}
+	if strings.Contains(string(data), `"name"`) {
+		t.Fatalf("expected empty session name to be omitted, got %s", data)
+	}
+}
+
+func TestSendCompletionCommandReportsNonZeroOutput(t *testing.T) {
+	dir := t.TempDir()
+	command := writeNotifierScript(t, dir, "fail.sh", `#!/bin/sh
+echo "useful stdout"
+echo "useful stderr" >&2
+exit 7
+`)
+
+	err := SendCompletionCommand(command, CompletionCommandPayload{SchemaVersion: 1, Event: "session.completed"})
+	if err == nil {
+		t.Fatal("expected non-zero notifier to return error")
+	}
+	text := err.Error()
+	if !strings.Contains(text, "exit status 7") || !strings.Contains(text, "useful stdout") || !strings.Contains(text, "useful stderr") {
+		t.Fatalf("expected exit status and captured output in error, got %v", err)
+	}
+}
+
+func TestSendCompletionCommandTimesOut(t *testing.T) {
+	dir := t.TempDir()
+	command := writeNotifierScript(t, dir, "sleep.sh", `#!/bin/sh
+sleep 2
+`)
+
+	err := SendCompletionCommandWithTimeout(command, CompletionCommandPayload{SchemaVersion: 1, Event: "session.completed"}, 20*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected timeout error, got %v", err)
+	}
+}
+
+func TestSendCompletionCommandsAttemptsAllCommands(t *testing.T) {
+	dir := t.TempDir()
+	firstPath := filepath.Join(dir, "first.txt")
+	secondPath := filepath.Join(dir, "second.txt")
+	failCommand := writeNotifierScript(t, dir, "fail.sh", `#!/bin/sh
+echo first > "$AGENTCTL_FIRST_OUT"
+exit 3
+`)
+	okCommand := writeNotifierScript(t, dir, "ok.sh", `#!/bin/sh
+echo second > "$AGENTCTL_SECOND_OUT"
+`)
+	t.Setenv("AGENTCTL_FIRST_OUT", firstPath)
+	t.Setenv("AGENTCTL_SECOND_OUT", secondPath)
+
+	err := SendCompletionCommands([]string{failCommand, okCommand}, CompletionCommandPayload{SchemaVersion: 1, Event: "session.completed"})
+	if err == nil {
+		t.Fatal("expected joined error from failing command")
+	}
+	if _, readErr := os.ReadFile(firstPath); readErr != nil {
+		t.Fatalf("expected first notifier to run: %v", readErr)
+	}
+	if _, readErr := os.ReadFile(secondPath); readErr != nil {
+		t.Fatalf("expected second notifier to run despite first failure: %v", readErr)
+	}
+}
+
+func TestValidateCompletionCommandRequiresExplicitPath(t *testing.T) {
+	if err := ValidateCompletionCommand("notify-test"); err == nil {
+		t.Fatal("expected bare command name to be rejected")
+	}
+	if err := ValidateCompletionCommand("./notify-test --arg"); err == nil {
+		t.Fatal("expected command string with arguments to be rejected")
+	}
+	if err := ValidateCompletionCommand("./notify-test"); err != nil {
+		t.Fatalf("expected relative path to be accepted: %v", err)
+	}
+	if err := ValidateCompletionCommand("/tmp/notify-test"); err != nil {
+		t.Fatalf("expected absolute path to be accepted: %v", err)
+	}
+}
+
+func writeNotifierScript(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("WriteFile(%s) returned error: %v", name, err)
+	}
+	return path
 }

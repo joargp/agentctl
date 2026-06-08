@@ -25,6 +25,10 @@ jobs:
           GOOS=darwin  GOARCH=amd64 go build -o "$DIST_DIR/agentctl_darwin_amd64"  .
           GOOS=linux   GOARCH=amd64 go build -o "$DIST_DIR/agentctl_linux_amd64"   .
           GOOS=linux   GOARCH=arm64 go build -o "$DIST_DIR/agentctl_linux_arm64"   .
+          GOOS=darwin  GOARCH=arm64 go build -o "$DIST_DIR/agentctl-notify-codex_darwin_arm64"  ./cmd/agentctl-notify-codex
+          GOOS=darwin  GOARCH=amd64 go build -o "$DIST_DIR/agentctl-notify-codex_darwin_amd64"  ./cmd/agentctl-notify-codex
+          GOOS=linux   GOARCH=amd64 go build -o "$DIST_DIR/agentctl-notify-codex_linux_amd64"   ./cmd/agentctl-notify-codex
+          GOOS=linux   GOARCH=arm64 go build -o "$DIST_DIR/agentctl-notify-codex_linux_arm64"   ./cmd/agentctl-notify-codex
 
       - name: Create release
         uses: softprops/action-gh-release@v2
