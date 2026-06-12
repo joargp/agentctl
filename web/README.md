@@ -11,23 +11,19 @@ Features:
 
 ## Run the Dashboard
 
-To start the dashboard directly:
+Primary entry point:
+
+```bash
+agentctl dashboard --port 8080
+```
+
+Development wrapper:
 
 ```bash
 go run web/main.go --port 8080
 ```
 
 Then open your browser to: **http://localhost:8080**
-
-## Build the Binary
-
-To compile the self-contained dashboard binary:
-
-```bash
-go build -o web/dashboard web/main.go
-```
-
-The compiled binary `web/dashboard` contains all static CSS, HTML, and JS compiled directly into it.
 
 ## Development
 
@@ -38,4 +34,15 @@ If you want to edit the frontend code:
    ```bash
    tsc -p web/tsconfig.json
    ```
-3. Run/rebuild `web/main.go` to serve the updated JS.
+   This writes `internal/dashboard/static/app.js` for the embedded dashboard assets.
+3. Run `agentctl dashboard --port 8080` or `go run web/main.go --port 8080` to serve the updated JS.
+
+## Wrapper Build
+
+If you want a development-only wrapper binary:
+
+```bash
+go build -o /tmp/agentctl-dashboard ./web
+```
+
+The installed `agentctl` binary already includes the dashboard command and embedded assets.

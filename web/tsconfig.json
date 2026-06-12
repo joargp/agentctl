@@ -3,7 +3,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Node",
-    "outDir": "./static",
+    "outDir": "../internal/dashboard/static",
     "rootDir": "./src",
     "strict": true,
     "esModuleInterop": true,
