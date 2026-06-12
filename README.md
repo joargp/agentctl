@@ -38,6 +38,9 @@ id=$(agentctl run --model claude-opus-4-6 --task-file /tmp/task.txt --cwd /repos
 
 # Block until done
 agentctl run --model claude-opus-4-6 --task "fix the failing tests" --cwd /repos/myapp --wait
+
+# Set the thinking level (off, minimal, low, medium, high, xhigh)
+id=$(agentctl run --model claude-opus-4-6 --thinking high --task "refactor the session store" 2>/dev/null)
 ```
 
 Exactly one of `--task` or `--task-file` must be provided.

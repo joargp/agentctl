@@ -37,6 +37,14 @@ func runSupervise(_ *cobra.Command, args []string) error {
 	return superviseSession(s, superviseRender)
 }
 
+func piArgs(s *session.Session, task string) []string {
+	args := []string{"--mode", "json", "--model", s.Model, "--no-session"}
+	if s.Thinking != "" {
+		args = append(args, "--thinking", s.Thinking)
+	}
+	return append(args, "-p", task)
+}
+
 func superviseSession(s *session.Session, render bool) error {
 	if err := enableSubreaper(); err != nil {
 		fmt.Fprintf(os.Stderr, "warn: could not enable child subreaper: %v\n", err)
@@ -66,7 +74,7 @@ func superviseSession(s *session.Session, render bool) error {
 	}
 	defer pipeReader.Close()
 
-	piCmd := exec.Command("pi", "--mode", "json", "--model", s.Model, "--no-session", "-p", string(taskBytes))
+	piCmd := exec.Command("pi", piArgs(s, string(taskBytes))...)
 	piCmd.Dir = s.Cwd
 	piCmd.Stdin = os.Stdin
 	piCmd.Stdout = pipeWriter

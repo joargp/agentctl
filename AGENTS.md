@@ -84,3 +84,30 @@ Tests exist for: `cmd/` (run, ls, status, monitor, dump, record, watch, cache), 
 - Stdout is for machine-readable output (session IDs, rendered logs); stderr is for hints and diagnostics.
 - Hidden commands (`record`, `watch`) are internal plumbing — not for direct user invocation.
 - Shell quoting is handled by writing task content to files rather than passing through shell arguments.
+
+## Codex App integration
+
+When working inside the Codex App and the user wants a reliable notification
+when an `agentctl`-managed agent finishes, prefer a native Codex subagent as the
+notification carrier:
+
+1. Spawn a Codex subagent with the built-in subagent tool.
+2. Have that subagent run `agentctl run ... --wait`.
+3. The subagent should report the `agentctl` result in its final answer.
+
+This uses Codex's own subagent completion path, so the parent thread receives
+the native subagent completion notification. Do not rely on an external
+`agentctl --notify-command` Codex app-server notifier for this behavior; that
+can append or start turns through app-server, but it does not reproduce Codex's
+native subagent notification flow.
+
+Example subagent task:
+
+```text
+Run this command and report the final result concisely:
+
+agentctl run --model google/gemini-3.5-flash \
+  --task "Investigate X and report concise findings" \
+  --cwd /path/to/repo \
+  --wait
+```

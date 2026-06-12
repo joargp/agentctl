@@ -386,6 +386,22 @@ func TestBuildRunScriptWithRender(t *testing.T) {
 	}
 }
 
+func TestValidateThinkingLevel(t *testing.T) {
+	for _, level := range append([]string{""}, thinkingLevels...) {
+		if err := validateThinkingLevel(level); err != nil {
+			t.Fatalf("expected %q to be valid, got error: %v", level, err)
+		}
+	}
+
+	err := validateThinkingLevel("ultra")
+	if err == nil {
+		t.Fatal("expected invalid thinking level to be rejected")
+	}
+	if !strings.Contains(err.Error(), "ultra") {
+		t.Fatalf("expected error to mention rejected level, got %v", err)
+	}
+}
+
 func TestResolveRunTaskWithInlineTask(t *testing.T) {
 	task, err := resolveRunTask("do work", "")
 	if err != nil {

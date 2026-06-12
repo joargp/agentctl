@@ -14,6 +14,7 @@ type Session struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name,omitempty"`
 	Model       string    `json:"model"`
+	Thinking    string    `json:"thinking,omitempty"`
 	Task        string    `json:"task"`
 	Cwd         string    `json:"cwd"`
 	TmuxSession string    `json:"tmux_session"`

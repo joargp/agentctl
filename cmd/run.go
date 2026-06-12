@@ -33,7 +33,8 @@ The agent's output is streamed to a log file with large delta payloads stripped.
 Examples:
   agentctl run --model claude-opus-4-6 --task "add tests for the auth module"
   agentctl run --model gpt-5.4 --task-file /tmp/task.txt --cwd /repos/myapp
-  agentctl run --model gpt-5.4 --task "review this PR" --cwd /repos/myapp --wait`,
+  agentctl run --model gpt-5.4 --task "review this PR" --cwd /repos/myapp --wait
+  agentctl run --model claude-opus-4-6 --thinking high --task "refactor the session store"`,
 	RunE: runRun,
 }
 
@@ -46,8 +47,11 @@ type watcherNotifyOptions struct {
 	Commands     []string
 }
 
+var thinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
+
 var (
 	runModel              string
+	runThinking           string
 	runTask               string
 	runTaskFile           string
 	runCwd                string
@@ -64,6 +68,7 @@ var (
 
 func init() {
 	runCmd.Flags().StringVar(&runModel, "model", "", "model to pass to pi (required)")
+	runCmd.Flags().StringVar(&runThinking, "thinking", "", "thinking level to pass to pi: "+strings.Join(thinkingLevels, ", "))
 	runCmd.Flags().StringVar(&runTask, "task", "", "task prompt (mutually exclusive with --task-file)")
 	runCmd.Flags().StringVar(&runTaskFile, "task-file", "", "path to file containing task prompt (mutually exclusive with --task)")
 	runCmd.Flags().StringVar(&runCwd, "cwd", "", "working directory (default: current dir)")
@@ -94,6 +99,10 @@ func runRun(_ *cobra.Command, _ []string) error {
 
 	if runModel == "" {
 		return fmt.Errorf("--model is required")
+	}
+
+	if err := validateThinkingLevel(runThinking); err != nil {
+		return err
 	}
 
 	task, err := resolveRunTask(runTask, runTaskFile)
@@ -138,6 +147,7 @@ func runRun(_ *cobra.Command, _ []string) error {
 		ID:          id,
 		Name:        runName,
 		Model:       runModel,
+		Thinking:    runThinking,
 		Task:        task,
 		Cwd:         cwd,
 		TmuxSession: tmuxSession,
@@ -416,6 +426,18 @@ func watcherArgs(agentID string, options watcherNotifyOptions) []string {
 		args = append(args, "--notify-command", command)
 	}
 	return args
+}
+
+func validateThinkingLevel(level string) error {
+	if level == "" {
+		return nil
+	}
+	for _, valid := range thinkingLevels {
+		if level == valid {
+			return nil
+		}
+	}
+	return fmt.Errorf("invalid --thinking level %q (valid: %s)", level, strings.Join(thinkingLevels, ", "))
 }
 
 func resolveRunTask(task string, taskFile string) (string, error) {
