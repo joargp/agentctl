@@ -8,268 +8,20 @@ CLI for running and monitoring [pi](https://buildwithpi.ai) coding agent session
 go install github.com/joargp/agentctl@latest
 ```
 
-Or build from source:
-
-```bash
-git clone https://github.com/joargp/agentctl
-cd agentctl
-go install .
-```
-
 Requires `tmux` and `pi` in `$PATH`.
 
-## Usage
-
-### Check the version
+## Quick start
 
 ```bash
-agentctl --version
-agentctl version
-```
-
-### Spawn an agent
-
-```bash
-# Fire and forget — capture the ID
+# Spawn an agent — the session ID is printed to stdout, hints to stderr
 id=$(agentctl run --model claude-opus-4-6 --task "add unit tests to the auth module" --cwd /repos/myapp 2>/dev/null)
 
-# Or pass task from file (safer for large prompts)
-id=$(agentctl run --model claude-opus-4-6 --task-file /tmp/task.txt --cwd /repos/myapp 2>/dev/null)
-
-# Block until done
-agentctl run --model claude-opus-4-6 --task "fix the failing tests" --cwd /repos/myapp --wait
-
-# Set the thinking level (off, minimal, low, medium, high, xhigh)
-id=$(agentctl run --model claude-opus-4-6 --thinking high --task "refactor the session store" 2>/dev/null)
+agentctl status $id     # one-line summary: "thinking", "running bash: echo hello", ...
+agentctl dump $id -f    # follow rendered output (like tail -f)
+agentctl monitor        # stream live output from all running sessions
+agentctl ls             # list sessions with status, cost, and activity
+agentctl kill $id       # kill the session, preserve its log
 ```
-
-Exactly one of `--task` or `--task-file` must be provided.
-
-The session ID is printed to **stdout**; hints go to **stderr** so `id=$(agentctl run ...)` works cleanly.
-
-### Completion notifications
-
-`agentctl run` can notify another system when the agent finishes.
-
-#### Pi session follow-up
-
-```bash
-# Uses $PI_SESSION_ID automatically when present, but only when no explicit notifier is selected
-id=$(agentctl run --model claude-opus-4-6 --task "..." 2>/dev/null)
-
-# Or target a specific pi session explicitly
-id=$(agentctl run --model claude-opus-4-6 --task "..." --notify-session "$PI_SESSION_ID" 2>/dev/null)
-```
-
-#### Munin shorthand
-
-When Munin provides these environment variables:
-- `MUNIN_EVENTS_DIR`
-- `MUNIN_CHANNEL_ID`
-- `MUNIN_THREAD_TS` (optional)
-
-use the shorthand flag:
-
-```bash
-id=$(agentctl run --model openai/gpt-5.4 --task "..." --notify-munin 2>/dev/null)
-```
-
-#### Write an immediate event file explicitly
-
-Useful outside Munin or when you want to override the defaults:
-
-```bash
-id=$(agentctl run \
-  --model openai/gpt-5.4 \
-  --task "..." \
-  --notify-event-dir /workspace/events \
-  --notify-event-channel C123 \
-  --notify-event-thread 1710000000.000100 \
-  2>/dev/null)
-```
-
-This writes an `immediate` event JSON file when the agent completes.
-
-#### Run an executable notifier
-
-Use `--notify-command` to invoke an executable with completion JSON on stdin:
-
-```bash
-id=$(agentctl run \
-  --model openai/gpt-5.4 \
-  --task "..." \
-  --notify-command ./scripts/agentctl-notify-codex \
-  2>/dev/null)
-```
-
-The command value must be one explicit executable path, such as `./notify` or
-`/usr/local/bin/notify`. Bare command names and command strings with arguments
-are rejected; `agentctl` does not look up notifier commands from `$PATH` and
-does not run them through a shell.
-
-Notifier commands inherit the watcher environment and receive this payload:
-
-```json
-{
-  "schemaVersion": 1,
-  "event": "session.completed",
-  "session": {
-    "id": "abc12345",
-    "name": "optional-name",
-    "model": "claude-opus-4-6",
-    "task": "original task",
-    "cwd": "/repo/path",
-    "startedAt": "2026-06-08T12:00:00Z",
-    "logFile": "/Users/me/.local/share/agentctl/logs/abc12345.log",
-    "turns": 3,
-    "totalCost": 0.03
-  },
-  "message": "Agent **claude-opus-4-6** (`abc12345`) finished...",
-  "dumpCommand": "agentctl dump abc12345"
-}
-```
-
-`agentctl` does not depend on Codex. Codex, Slack, or other integrations should
-live in notifier executables that consume this payload.
-
-#### Codex notifier
-
-This repo includes an external Codex notifier binary. Install it separately:
-
-```bash
-go install github.com/joargp/agentctl/cmd/agentctl-notify-codex@latest
-```
-
-Then invoke it by explicit path. From inside a Codex thread, pass the current
-thread ID through `AGENTCTL_CODEX_THREAD_ID` so the detached watcher has an
-explicit target:
-
-```bash
-id=$(AGENTCTL_CODEX_THREAD_ID="$CODEX_THREAD_ID" \
-  agentctl run \
-  --model claude-opus-4-6 \
-  --task "..." \
-  --notify-command "$(command -v agentctl-notify-codex)" \
-  2>/dev/null)
-```
-
-The notifier starts `codex app-server`, resumes the target thread, sends the
-completion message with `turn/start`, and exits after Codex completes the turn.
-Configuration is environment-only because `--notify-command` accepts a single
-executable path:
-
-- `AGENTCTL_CODEX_THREAD_ID` overrides the target thread.
-- `CODEX_THREAD_ID` is used when `AGENTCTL_CODEX_THREAD_ID` is unset.
-- `AGENTCTL_CODEX_BIN` overrides the `codex` binary path.
-- `AGENTCTL_CODEX_TIMEOUT_SECONDS` overrides the notifier's internal timeout
-  (default: 90 seconds). Keep it below `agentctl`'s command notifier timeout
-  unless you invoke `agentctl-notify-codex` directly.
-
-To target a specific Codex thread explicitly:
-
-```bash
-AGENTCTL_CODEX_THREAD_ID=019ea641-f54e-7c20-ab26-0edfcd41445b \
-  agentctl run \
-    --model claude-opus-4-6 \
-    --task "..." \
-    --notify-command "$(command -v agentctl-notify-codex)"
-```
-
-### Provider syntax
-
-Use `provider/model` when a model name is ambiguous across providers:
-
-```bash
-agentctl run --model openai/gpt-5.4 --task "..."
-```
-
-### Monitor live output
-
-```bash
-agentctl monitor              # all running sessions
-agentctl monitor <id> <id>   # specific sessions
-```
-
-Labels default to the model name. The short ID is only appended when two sessions share the same model:
-
-```
-[claude-opus-4-6]  Nodes whisper across the wire,
-[gpt-5.4]            Consensus blooms where failures test the light.
-```
-
-Use `--name` for readable labels:
-
-```bash
-id1=$(agentctl run --model claude-opus-4-6 --name opus --task "..." 2>/dev/null)
-id2=$(agentctl run --model openai/gpt-5.4   --name gpt    --task "..." 2>/dev/null)
-agentctl monitor $id1 $id2
-# [opus]   ...
-# [gpt]    ...
-```
-
-### Read output
-
-```bash
-agentctl dump <id>          # last 100 lines (rendered from JSON)
-agentctl dump <id> -n 200   # last N lines
-agentctl dump <id> --json   # raw NDJSON events
-agentctl dump <id> --summary # condensed (tool calls + final text only)
-agentctl dump <id> -f       # follow mode (like tail -f, rendered)
-agentctl dump <id> -f --json  # follow mode with raw NDJSON
-```
-
-Parses the JSON event log and renders human-readable output including assistant text, tool calls with arguments, tool results, token counts, costs, and turn boundaries. Works both while the agent is running and after completion. Follow mode (`-f`) streams output in real-time and stops when the session ends.
-
-### Quick status
-
-```bash
-agentctl status <id>    # one-line summary: "thinking", "running bash: echo hello", etc.
-```
-
-### Manual intervention
-
-```bash
-agentctl attach <id>   # attach terminal to the tmux session; detach with Ctrl+b d
-```
-
-Use this when an agent is waiting for confirmation or needs auth.
-
-### List & clean up
-
-```bash
-agentctl ls                 # list sessions with status, cost, and activity
-agentctl ls --since 1d      # only sessions from the last day
-agentctl ls --model opus    # filter by model name
-agentctl costs              # total API costs across all sessions
-agentctl costs --since 1d   # costs from the last day only
-agentctl kill <id>          # kill session, preserve log
-agentctl kill --all         # kill all sessions
-```
-
-## How it works
-
-Each `agentctl run` creates a tmux session that runs a small `agentctl supervise` wrapper. The supervisor:
-
-- launches `pi` in its own dedicated process group
-- streams pi's NDJSON output to the terminal while writing a sanitized log
-- records runtime PID/PGID metadata under `~/.local/share/agentctl/runtime/`
-- sends `SIGTERM`/`SIGKILL` to the full process group on normal exit, crash, timeout, tmux shutdown, or `agentctl kill`
-- reaps orphaned descendants on Linux via child-subreaper mode
-- marks explicitly killed sessions as cancelled so watchers do not emit misleading success notifications
-
-The supervised `pi` command is:
-
-```sh
-pi --mode json --model <model> --no-session -p "<task>" 2><logfile>.stderr | agentctl record <logfile>
-```
-
-Pi runs in JSON mode, producing streaming NDJSON events (text deltas, tool calls, tool results) on stdout. Stderr is redirected to a separate `.stderr` file to keep the NDJSON log clean (pi emits terminal escape sequences on stderr that can be very large). The supervisor mirrors the raw JSON stream to the terminal while stripping large `partial`/`message` payloads from `thinking_delta` and `text_delta` events before persisting them to the log file. Non-JSON lines are filtered out. This keeps recordings linear in size and still enables real-time progress monitoring via `dump` and `monitor`.
-
-When pi exits the supervisor tears down the rest of the agent's process tree and the tmux session is destroyed automatically, flipping the session status to `done`.
-
-When `--notify-session`, `--notify-munin`, `--notify-event-dir`, or `--notify-command` is set, `agentctl` also spawns a detached watcher process that waits for the tmux session to disappear and then sends the configured completion notification(s). Executable notifiers have a 120 second timeout. Detached watcher stdout/stderr is written to `<logfile>.watch.log`, for example `~/.local/share/agentctl/logs/abc12345.watch.log`.
-
-Session metadata is stored in `~/.local/share/agentctl/sessions/`. Log files live in `~/.local/share/agentctl/logs/` and survive `kill`. Runtime PID/PGID state is stored in `~/.local/share/agentctl/runtime/` while a session is active and is removed on successful cleanup.
 
 ## Commands
 
@@ -279,7 +31,65 @@ Session metadata is stored in `~/.local/share/agentctl/sessions/`. Log files liv
 | `ls` | List sessions with status, age, and cost |
 | `status <id>` | One-line summary (thinking, running bash, writing...) |
 | `monitor [id...]` | Stream live labeled output |
-| `dump <id> [-n] [-f] [--json]` | Print/follow rendered output (or raw JSON) |
+| `dump <id> [-n] [-f] [--json] [--summary]` | Print/follow rendered output (or raw JSON) |
 | `attach <id>` | Attach terminal for manual intervention |
 | `costs` | Show per-session and total API costs |
 | `kill <id> / --all` | Kill session(s), preserve logs |
+
+## Running agents
+
+```bash
+# Pass the task from a file (safer for large prompts)
+id=$(agentctl run --model claude-opus-4-6 --task-file /tmp/task.txt 2>/dev/null)
+
+# Block until done
+agentctl run --model claude-opus-4-6 --task "fix the failing tests" --wait
+
+# Set the thinking level (off, minimal, low, medium, high, xhigh)
+id=$(agentctl run --model claude-opus-4-6 --thinking high --task "refactor the session store" 2>/dev/null)
+
+# Use provider/model when a model name is ambiguous across providers
+agentctl run --model openai/gpt-5.4 --task "..."
+
+# Name sessions for readable monitor labels (default label is the model name)
+id=$(agentctl run --model claude-opus-4-6 --name opus --task "..." 2>/dev/null)
+```
+
+Exactly one of `--task` or `--task-file` must be provided.
+
+## Reading output
+
+```bash
+agentctl dump <id>           # last 100 lines (rendered from JSON)
+agentctl dump <id> -n 200    # last N lines
+agentctl dump <id> --json    # raw NDJSON events
+agentctl dump <id> --summary # condensed (tool calls + final text only)
+agentctl dump <id> -f        # follow mode, stops when the session ends
+```
+
+`dump` renders assistant text, tool calls with arguments, tool results, token counts, costs, and turn boundaries — both while the agent is running and after completion.
+
+Use `agentctl attach <id>` when an agent is waiting for confirmation or needs auth (detach with `Ctrl+b d`).
+
+## Completion notifications
+
+`agentctl run` can notify another system when the agent finishes:
+
+- `--notify-session <id>` — follow up in a pi session (defaults to `$PI_SESSION_ID` when no notifier is selected)
+- `--notify-munin` — shorthand for Munin's event-file convention
+- `--notify-event-dir/-channel/-thread` — write an event JSON file explicitly
+- `--notify-command <path>` — run an executable with a completion JSON payload on stdin
+
+See [docs/notifications.md](docs/notifications.md) for the payload schema, the bundled Codex notifier, and configuration details.
+
+## How it works
+
+Each `agentctl run` creates a tmux session running a small `agentctl supervise` wrapper around:
+
+```sh
+pi --mode json --model <model> --no-session -p "<task>" 2><logfile>.stderr | agentctl record <logfile>
+```
+
+The supervisor streams pi's NDJSON output to the terminal while writing a sanitized log (large `thinking_delta`/`text_delta` payloads are stripped, keeping recordings linear in size). It runs pi in a dedicated process group and tears down the full process tree on exit, crash, timeout, or `agentctl kill`. When pi exits, the tmux session is destroyed and the session status flips to `done`.
+
+State lives under `~/.local/share/agentctl/`: session metadata in `sessions/`, logs in `logs/` (these survive `kill`), and runtime PID/PGID state in `runtime/` while a session is active.
