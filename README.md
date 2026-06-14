@@ -32,6 +32,7 @@ agentctl kill $id       # kill the session, preserve its log
 | `status <id>` | One-line summary (thinking, running bash, writing...) |
 | `monitor [id...]` | Stream live labeled output |
 | `dump <id> [-n] [-f] [--json] [--summary]` | Print/follow rendered output (or raw JSON) |
+| `dashboard [--port 8080]` | Run the local browser dashboard |
 | `attach <id>` | Attach terminal for manual intervention |
 | `costs` | Show per-session and total API costs |
 | `kill <id> / --all` | Kill session(s), preserve logs |
@@ -70,6 +71,12 @@ agentctl dump <id> -f        # follow mode, stops when the session ends
 `dump` renders assistant text, tool calls with arguments, tool results, token counts, costs, and turn boundaries — both while the agent is running and after completion.
 
 Use `agentctl attach <id>` when an agent is waiting for confirmation or needs auth (detach with `Ctrl+b d`).
+
+```bash
+agentctl dashboard --port 8080
+```
+
+This opens a local browser dashboard for session history, live logs, and killing running sessions.
 
 ## Completion notifications
 
