@@ -984,29 +984,7 @@ func filterLastNTurns(data []byte, n int) []byte {
 
 // formatAPIError formats an error message from a message_start event with stopReason "error".
 func formatAPIError(msg map[string]interface{}) string {
-	errMsg, _ := msg["errorMessage"].(string)
-	if errMsg == "" {
-		return "❌ API error\n"
-	}
-	// Try to extract a readable message from nested JSON error strings.
-	var parsed map[string]interface{}
-	if json.Unmarshal([]byte(errMsg), &parsed) == nil {
-		if inner, ok := parsed["error"].(map[string]interface{}); ok {
-			if m, ok := inner["message"].(string); ok {
-				errMsg = m
-				// The message itself might be JSON (double-encoded).
-				var innerParsed map[string]interface{}
-				if json.Unmarshal([]byte(m), &innerParsed) == nil {
-					if e2, ok := innerParsed["error"].(map[string]interface{}); ok {
-						if m2, ok := e2["message"].(string); ok {
-							errMsg = m2
-						}
-					}
-				}
-			}
-		}
-	}
-	return fmt.Sprintf("❌ %s\n", truncateRunesASCII(errMsg, 500))
+	return fmt.Sprintf("❌ %s\n", apiErrorText(msg))
 }
 
 // formatToolCall formats a tool_execution_start event into a display string.

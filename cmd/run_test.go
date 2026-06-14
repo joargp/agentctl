@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/joargp/agentctl/internal/session"
 )
 
 func TestResolveWatcherNotifyOptionsNotifyMuninUsesEnv(t *testing.T) {
@@ -434,5 +436,91 @@ func TestResolveRunTaskRejectsBothOrNeither(t *testing.T) {
 	}
 	if _, err := resolveRunTask("inline", "/tmp/task.txt"); err == nil {
 		t.Fatal("expected error when both --task and --task-file are provided")
+	}
+}
+
+func TestStartupEventStatusReadyEvents(t *testing.T) {
+	cases := []string{
+		`{"type":"message_update","assistantMessageEvent":{"type":"thinking_start"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"thinking_delta","delta":"checking"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_start"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hello"}}`,
+		`{"type":"thinking_start"}`,
+		`{"type":"thinking_delta","delta":"checking"}`,
+		`{"type":"text_start"}`,
+		`{"type":"text_delta","delta":"hello"}`,
+		`{"type":"tool_execution_start","toolName":"bash"}`,
+		`{"type":"message_start","message":{"role":"assistant"}}`,
+		`{"type":"turn_end","message":{"usage":{"totalTokens":12}}}`,
+	}
+
+	for _, input := range cases {
+		state, detail := startupEventStatus([]byte(input))
+		if state != startupReady {
+			t.Fatalf("expected ready for %s, got state %d detail %q", input, state, detail)
+		}
+	}
+}
+
+func TestStartupEventStatusIgnoresUserMessageStart(t *testing.T) {
+	input := `{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`
+	state, detail := startupEventStatus([]byte(input))
+	if state != startupPending || detail != "" {
+		t.Fatalf("expected pending user message, got state %d detail %q", state, detail)
+	}
+}
+
+func TestStartupEventStatusDetectsAPIError(t *testing.T) {
+	input := `{"type":"message_start","message":{"stopReason":"error","errorMessage":"{\"error\":{\"message\":\"model google/not-real does not exist\"}}"}}`
+	state, detail := startupEventStatus([]byte(input))
+	if state != startupFailed {
+		t.Fatalf("expected failed startup, got state %d detail %q", state, detail)
+	}
+	if !strings.Contains(detail, "model google/not-real does not exist") {
+		t.Fatalf("expected provider error detail, got %q", detail)
+	}
+}
+
+func TestScanStartupLogReturnsFirstTerminalState(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "agent.log")
+	data := strings.Join([]string{
+		`{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_start"}}`,
+		`{"type":"message_update","assistantMessageEvent":{"type":"text_delta","delta":"hi"}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(logFile, []byte(data), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	state, detail, offset := scanStartupLog(logFile, 0)
+	if state != startupReady || detail != "" {
+		t.Fatalf("expected ready without detail, got state %d detail %q", state, detail)
+	}
+	if offset <= 0 {
+		t.Fatalf("expected scan offset to advance, got %d", offset)
+	}
+}
+
+func TestStartupFailureErrorFallsBackToStderr(t *testing.T) {
+	dir := t.TempDir()
+	logFile := filepath.Join(dir, "agent.log")
+	if err := os.WriteFile(logFile+".stderr", []byte("provider rejected model\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	err := startupFailureError(&session.Session{
+		ID:      "abc123",
+		Model:   "google/not-real",
+		LogFile: logFile,
+	}, "")
+	if err == nil {
+		t.Fatal("expected startup failure error")
+	}
+	text := err.Error()
+	for _, expected := range []string{"abc123", "google/not-real", "provider rejected model", logFile} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected %q in error %q", expected, text)
+		}
 	}
 }

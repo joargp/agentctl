@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -85,4 +86,30 @@ func extractCostFromUsage(msg map[string]interface{}) (float64, error) {
 		return 0, fmt.Errorf("cost.total missing or not numeric")
 	}
 	return total, nil
+}
+
+func apiErrorText(msg map[string]interface{}) string {
+	errMsg, _ := msg["errorMessage"].(string)
+	if errMsg == "" {
+		return "API error"
+	}
+	// Try to extract a readable message from nested JSON error strings.
+	var parsed map[string]interface{}
+	if json.Unmarshal([]byte(errMsg), &parsed) == nil {
+		if inner, ok := parsed["error"].(map[string]interface{}); ok {
+			if m, ok := inner["message"].(string); ok {
+				errMsg = m
+				// The message itself might be JSON (double-encoded).
+				var innerParsed map[string]interface{}
+				if json.Unmarshal([]byte(m), &innerParsed) == nil {
+					if e2, ok := innerParsed["error"].(map[string]interface{}); ok {
+						if m2, ok := e2["message"].(string); ok {
+							errMsg = m2
+						}
+					}
+				}
+			}
+		}
+	}
+	return truncateRunesASCII(errMsg, 500)
 }

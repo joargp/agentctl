@@ -1,7 +1,10 @@
 package cmd
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,6 +67,7 @@ var (
 	runNotifyEventChannel string
 	runNotifyEventThread  string
 	runNotifyCommands     []string
+	runStartupTimeout     time.Duration
 )
 
 func init() {
@@ -87,6 +91,8 @@ func init() {
 		"optional thread ts to include in the completion event (requires --notify-event-dir)")
 	runCmd.Flags().StringArrayVar(&runNotifyCommands, "notify-command", nil,
 		"executable path to invoke with completion JSON on stdin when the agent finishes (repeatable)")
+	runCmd.Flags().DurationVar(&runStartupTimeout, "startup-timeout", 60*time.Second,
+		"wait for provider-backed output before reporting the session as started")
 	rootCmd.AddCommand(runCmd)
 }
 
@@ -190,6 +196,13 @@ func runRun(_ *cobra.Command, _ []string) error {
 	// When the supervisor exits the window closes and the tmux session disappears.
 	if err := tmux.NewSession(tmuxSession, "sh", scriptFile); err != nil {
 		cleanupStartFailure()
+		return err
+	}
+
+	if err := waitForStartupReady(sess, runStartupTimeout); err != nil {
+		if cleanupErr := cleanupSessionProcessTree(sess, runtimeCleanupGrace); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "warn: clean up failed startup: %v\n", cleanupErr)
+		}
 		return err
 	}
 
@@ -300,6 +313,151 @@ func buildRunScript(id, self string, render bool) string {
 set -e
 exec %s supervise%s %s
 `, shellQuote(self), renderFlag, shellQuote(id))
+}
+
+type startupState int
+
+const (
+	startupPending startupState = iota
+	startupReady
+	startupFailed
+)
+
+func waitForStartupReady(s *session.Session, timeout time.Duration) error {
+	if timeout <= 0 {
+		return fmt.Errorf("startup timeout must be positive")
+	}
+
+	deadline := time.Now().Add(timeout)
+	var offset int64
+	var lastFailure string
+
+	for {
+		state, detail, nextOffset := scanStartupLog(s.LogFile, offset)
+		offset = nextOffset
+		switch state {
+		case startupReady:
+			return nil
+		case startupFailed:
+			if detail != "" {
+				lastFailure = detail
+			}
+			return startupFailureError(s, lastFailure)
+		}
+
+		if !tmux.SessionExists(s.TmuxSession) {
+			state, detail, _ = scanStartupLog(s.LogFile, offset)
+			if state == startupReady {
+				return nil
+			}
+			if detail != "" {
+				lastFailure = detail
+			}
+			return startupFailureError(s, lastFailure)
+		}
+
+		if time.Now().After(deadline) {
+			return fmt.Errorf("agent %s did not produce provider-backed output within %s (log: %s)", s.ID, timeout, s.LogFile)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func scanStartupLog(path string, offset int64) (startupState, string, int64) {
+	f, err := os.Open(path)
+	if err != nil {
+		return startupPending, "", offset
+	}
+	defer f.Close()
+
+	if offset > 0 {
+		if _, err := f.Seek(offset, io.SeekStart); err != nil {
+			return startupPending, "", offset
+		}
+	}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+	currentOffset := offset
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		currentOffset += int64(len(line)) + 1
+		state, detail := startupEventStatus(line)
+		if state != startupPending {
+			return state, detail, currentOffset
+		}
+	}
+
+	if pos, err := f.Seek(0, io.SeekCurrent); err == nil {
+		currentOffset = pos
+	}
+	return startupPending, "", currentOffset
+}
+
+func startupEventStatus(line []byte) (startupState, string) {
+	var event map[string]interface{}
+	if err := json.Unmarshal(line, &event); err != nil {
+		return startupPending, ""
+	}
+
+	eventType, _ := event["type"].(string)
+	switch eventType {
+	case "message_start":
+		msg, _ := event["message"].(map[string]interface{})
+		if stopReason, _ := msg["stopReason"].(string); stopReason == "error" {
+			return startupFailed, apiErrorText(msg)
+		}
+		if role, _ := msg["role"].(string); role == "assistant" {
+			return startupReady, ""
+		}
+	case "message_update":
+		ae, _ := event["assistantMessageEvent"].(map[string]interface{})
+		if ae == nil {
+			return startupPending, ""
+		}
+		switch aeType, _ := ae["type"].(string); aeType {
+		case "thinking_start", "thinking_delta", "text_start", "text_delta":
+			return startupReady, ""
+		}
+	case "thinking_start", "thinking_delta", "text_start", "text_delta", "tool_execution_start":
+		return startupReady, ""
+	case "turn_end":
+		msg, _ := event["message"].(map[string]interface{})
+		if stopReason, _ := msg["stopReason"].(string); stopReason == "error" {
+			return startupFailed, apiErrorText(msg)
+		}
+		if _, _, ok := usageSummary(msg); ok {
+			return startupReady, ""
+		}
+	}
+
+	return startupPending, ""
+}
+
+func startupFailureError(s *session.Session, detail string) error {
+	if detail == "" {
+		detail = stderrTail(s.LogFile + ".stderr")
+	}
+	if detail == "" {
+		detail = "pi exited before producing provider-backed output"
+	}
+	return fmt.Errorf("agent %s failed to start with model %s: %s (log: %s)", s.ID, s.Model, detail, s.LogFile)
+}
+
+func stderrTail(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	text := strings.TrimSpace(string(data))
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > 8 {
+		lines = lines[len(lines)-8:]
+	}
+	return truncateRunesASCII(strings.Join(lines, "\n"), 1000)
 }
 
 func resolveWatcherNotifyOptions(notifyMunin bool, getenv func(string) string) (watcherNotifyOptions, error) {
