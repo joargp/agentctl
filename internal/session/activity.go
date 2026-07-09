@@ -73,7 +73,7 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 			return Activity{State: "thinking", Status: "Thinking...", Category: "thinking"}
 		case "thinking_delta":
 			delta, _ := ae["delta"].(string)
-			return Activity{State: "thinking", Status: formatThinkingStatus(delta), Delta: delta, Replace: true, Category: "thinking"}
+			return Activity{State: "thinking", Status: formatThinkingStatus(delta), Delta: delta, Category: "thinking"}
 		case "thinking_end":
 			return Activity{State: "writing"}
 		case "text_delta":
@@ -90,7 +90,7 @@ func ParseActivityEvent(event map[string]interface{}, turnCount *int) Activity {
 		return Activity{State: "thinking", Status: "Thinking...", Category: "thinking"}
 	case "thinking_delta":
 		delta, _ := event["delta"].(string)
-		return Activity{State: "thinking", Status: formatThinkingStatus(delta), Delta: delta, Replace: true, Category: "thinking"}
+		return Activity{State: "thinking", Status: formatThinkingStatus(delta), Delta: delta, Category: "thinking"}
 	case "thinking_end":
 		return Activity{State: "writing"}
 	case "text_delta":

@@ -85,6 +85,10 @@ func TestWriteProgressEvent(t *testing.T) {
 		SubagentID: "abc123",
 		Text:       "All done",
 		Replace:    true,
+		Kind:       "result",
+		Summary:    "Done",
+		ToolName:   "bash",
+		ToolPath:   "/bin/bash",
 	})
 	if err != nil {
 		t.Fatalf("WriteProgressEvent returned error: %v", err)
@@ -113,6 +117,10 @@ func TestWriteProgressEvent(t *testing.T) {
 		SubagentID string `json:"subagentId"`
 		Text       string `json:"text"`
 		Replace    bool   `json:"replace"`
+		Kind       string `json:"kind"`
+		Summary    string `json:"summary"`
+		ToolName   string `json:"toolName"`
+		ToolPath   string `json:"toolPath"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		t.Fatalf("Unmarshal returned error: %v", err)
@@ -129,6 +137,18 @@ func TestWriteProgressEvent(t *testing.T) {
 	}
 	if !payload.Replace {
 		t.Fatal("expected replace flag to round-trip")
+	}
+	if payload.Kind != "result" {
+		t.Fatalf("expected kind to round-trip, got %q", payload.Kind)
+	}
+	if payload.Summary != "Done" {
+		t.Fatalf("expected summary to round-trip, got %q", payload.Summary)
+	}
+	if payload.ToolName != "bash" {
+		t.Fatalf("expected tool name to round-trip, got %q", payload.ToolName)
+	}
+	if payload.ToolPath != "/bin/bash" {
+		t.Fatalf("expected tool path to round-trip, got %q", payload.ToolPath)
 	}
 }
 

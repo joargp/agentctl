@@ -281,6 +281,8 @@ func emitProgressLine(line *tail.Line, s *session.Session, opts watcherNotifyOpt
 		Text:       activity.Status,
 		Category:   activity.Category,
 		Replace:    activity.Replace,
+		Kind:       progressKindForActivity(activity),
+		ToolName:   toolNameFromCategory(activity.Category),
 	}
 	// Include model and task in the first progress event so
 	// the Munin runtime can display them in the progress header.
@@ -290,6 +292,30 @@ func emitProgressLine(line *tail.Line, s *session.Session, opts watcherNotifyOpt
 		event.Task = truncateTask(s.Task, 100)
 	}
 	_ = notify.WriteProgressEvent(opts.EventDir, event)
+}
+
+func progressKindForActivity(activity session.Activity) string {
+	if activity.Category == "thinking" {
+		return "status"
+	}
+	if activity.Category == "error" {
+		return "error"
+	}
+	if toolNameFromCategory(activity.Category) != "" {
+		return "tool"
+	}
+	if activity.Replace {
+		return "result"
+	}
+	return "log"
+}
+
+func toolNameFromCategory(category string) string {
+	const prefix = "tool:"
+	if !strings.HasPrefix(category, prefix) {
+		return ""
+	}
+	return strings.TrimSpace(strings.TrimPrefix(category, prefix))
 }
 
 func truncateTask(task string, maxLen int) string {

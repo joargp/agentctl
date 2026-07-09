@@ -56,7 +56,9 @@ func TestEmitProgressLineAccumulatesThinkingDeltas(t *testing.T) {
 	}
 
 	var last struct {
-		Text string `json:"text"`
+		Text    string `json:"text"`
+		Replace bool   `json:"replace"`
+		Kind    string `json:"kind"`
 	}
 	for _, entry := range entries {
 		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
@@ -64,7 +66,9 @@ func TestEmitProgressLineAccumulatesThinkingDeltas(t *testing.T) {
 			t.Fatalf("ReadFile returned error: %v", err)
 		}
 		var event struct {
-			Text string `json:"text"`
+			Text    string `json:"text"`
+			Replace bool   `json:"replace"`
+			Kind    string `json:"kind"`
 		}
 		if err := json.Unmarshal(data, &event); err != nil {
 			t.Fatalf("Unmarshal returned error: %v", err)
@@ -74,6 +78,12 @@ func TestEmitProgressLineAccumulatesThinkingDeltas(t *testing.T) {
 
 	if last.Text != "Thinking: Need to inspect the directory" {
 		t.Fatalf("expected accumulated thinking text, got %q", last.Text)
+	}
+	if last.Replace {
+		t.Fatal("expected thinking progress not to set legacy replace")
+	}
+	if last.Kind != "status" {
+		t.Fatalf("expected thinking progress kind status, got %q", last.Kind)
 	}
 }
 

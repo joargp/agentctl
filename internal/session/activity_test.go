@@ -72,8 +72,8 @@ func TestFormatEventStatusThinkingDelta(t *testing.T) {
 	if activity.Category != "thinking" {
 		t.Fatalf("expected thinking category, got %q", activity.Category)
 	}
-	if !activity.Replace {
-		t.Fatal("expected thinking delta to replace previous thinking progress")
+	if activity.Replace {
+		t.Fatal("expected thinking delta not to set legacy Replace")
 	}
 }
 

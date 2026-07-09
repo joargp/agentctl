@@ -36,6 +36,10 @@ type eventFile struct {
 	SubagentID string            `json:"subagentId,omitempty"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
 	Replace    bool              `json:"replace,omitempty"`
+	Kind       string            `json:"kind,omitempty"`
+	Summary    string            `json:"summary,omitempty"`
+	ToolName   string            `json:"toolName,omitempty"`
+	ToolPath   string            `json:"toolPath,omitempty"`
 }
 
 // CompletionCommandPayload is the stable JSON payload sent to executable
@@ -80,6 +84,10 @@ type ProgressEvent struct {
 	Task       string // short task description (optional, included in first event)
 	Category   string // progress category such as thinking, tool:bash, error
 	Replace    bool   // replace the progress body with the provided text
+	Kind       string // display kind such as status, tool, result, error, log
+	Summary    string // short display summary for the parent progress message
+	ToolName   string // structured tool name for tool progress
+	ToolPath   string // structured path for tool progress
 }
 
 // SendFollowUp delivers message to the pi session identified by sessionID as a
@@ -178,6 +186,10 @@ func WriteProgressEvent(dir string, event ProgressEvent) error {
 		SubagentID: event.SubagentID,
 		Text:       event.Text,
 		Replace:    event.Replace,
+		Kind:       event.Kind,
+		Summary:    event.Summary,
+		ToolName:   event.ToolName,
+		ToolPath:   event.ToolPath,
 	}
 	if event.Model != "" || event.Task != "" || event.Name != "" || event.Category != "" {
 		payload.Metadata = make(map[string]string)
