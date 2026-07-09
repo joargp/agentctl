@@ -2,8 +2,11 @@ package cmd
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/joargp/agentctl/internal/session"
 )
 
 func TestParseDurationStandard(t *testing.T) {
@@ -145,5 +148,121 @@ func TestExtractTotalCostFromLog(t *testing.T) {
 	cost := extractTotalCost(f.Name())
 	if cost < 0.029 || cost > 0.031 {
 		t.Fatalf("expected ~0.03 cost, got %f", cost)
+	}
+}
+
+func TestRunLsQuietSkipsBulkTmuxLookupWithoutStatusFilters(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	s := &session.Session{
+		ID:          "quiet001",
+		Model:       "gpt-test",
+		Task:        "quiet listing",
+		Cwd:         home,
+		TmuxSession: "agentctl-quiet001",
+		StartedAt:   time.Now().Add(-time.Minute),
+		StatsCached: true,
+	}
+	saveSessionForTest(t, s)
+
+	prevModel, prevSince := lsModel, lsSince
+	prevTask, prevCwd := lsTask, lsCwd
+	prevRunning, prevDone, prevQuiet := lsRunning, lsDone, lsQuiet
+	prevListTmuxSessions := listTmuxSessionsForLs
+	defer func() {
+		lsModel, lsSince = prevModel, prevSince
+		lsTask, lsCwd = prevTask, prevCwd
+		lsRunning, lsDone, lsQuiet = prevRunning, prevDone, prevQuiet
+		listTmuxSessionsForLs = prevListTmuxSessions
+	}()
+	lsModel = ""
+	lsSince = ""
+	lsTask = ""
+	lsCwd = ""
+	lsRunning = false
+	lsDone = false
+	lsQuiet = true
+
+	calls := 0
+	listTmuxSessionsForLs = func() map[string]bool {
+		calls++
+		return map[string]bool{s.TmuxSession: true}
+	}
+
+	out := captureStdout(t, func() {
+		if err := runLs(nil, nil); err != nil {
+			t.Fatalf("runLs returned error: %v", err)
+		}
+	})
+
+	if calls != 0 {
+		t.Fatalf("expected quiet ls without status filters to skip tmux lookup, got %d calls", calls)
+	}
+	if strings.TrimSpace(out) != s.ID {
+		t.Fatalf("expected quiet output to contain only session id %q, got %q", s.ID, out)
+	}
+}
+
+func TestRunLsUsesSingleBulkTmuxLookupWhenNeeded(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	s1 := &session.Session{
+		ID:          "bulk001",
+		Model:       "gpt-test",
+		Task:        "running session",
+		Cwd:         home,
+		TmuxSession: "agentctl-bulk001",
+		StartedAt:   time.Now().Add(-time.Minute),
+		StatsCached: true,
+	}
+	s2 := &session.Session{
+		ID:          "bulk002",
+		Model:       "gpt-test",
+		Task:        "done session",
+		Cwd:         home,
+		TmuxSession: "agentctl-bulk002",
+		StartedAt:   time.Now().Add(-2 * time.Minute),
+		StatsCached: true,
+	}
+	saveSessionForTest(t, s1)
+	saveSessionForTest(t, s2)
+
+	prevModel, prevSince := lsModel, lsSince
+	prevTask, prevCwd := lsTask, lsCwd
+	prevRunning, prevDone, prevQuiet := lsRunning, lsDone, lsQuiet
+	prevListTmuxSessions := listTmuxSessionsForLs
+	defer func() {
+		lsModel, lsSince = prevModel, prevSince
+		lsTask, lsCwd = prevTask, prevCwd
+		lsRunning, lsDone, lsQuiet = prevRunning, prevDone, prevQuiet
+		listTmuxSessionsForLs = prevListTmuxSessions
+	}()
+	lsModel = ""
+	lsSince = ""
+	lsTask = ""
+	lsCwd = ""
+	lsRunning = false
+	lsDone = false
+	lsQuiet = false
+
+	calls := 0
+	listTmuxSessionsForLs = func() map[string]bool {
+		calls++
+		return map[string]bool{s1.TmuxSession: true}
+	}
+
+	out := captureStdout(t, func() {
+		if err := runLs(nil, nil); err != nil {
+			t.Fatalf("runLs returned error: %v", err)
+		}
+	})
+
+	if calls != 1 {
+		t.Fatalf("expected exactly one bulk tmux lookup, got %d", calls)
+	}
+	if !strings.Contains(out, s1.ID) || !strings.Contains(out, s2.ID) {
+		t.Fatalf("expected ls output to include both sessions, got %q", out)
 	}
 }

@@ -112,6 +112,70 @@ func TestListIncludesRecoveredLogOnlySessions(t *testing.T) {
 	}
 }
 
+func TestListPersistsRecoveredLogOnlySessionWithStats(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeLogForTest(t, home, "deadbeef",
+		`{"type":"session","timestamp":"2026-04-16T08:35:02.894Z","cwd":"/tmp/project"}`,
+		`{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"log only task"}]}}`,
+		`{"type":"message_start","message":{"role":"assistant","provider":"google","model":"gemini-3.1-pro-preview"}}`,
+		`{"type":"turn_end","message":{"provider":"google","model":"gemini-3.1-pro-preview","usage":{"cost":{"total":0.0123}}}}`,
+	)
+
+	sessions, err := List()
+	if err != nil {
+		t.Fatalf("List returned error: %v", err)
+	}
+
+	var recovered *Session
+	for _, s := range sessions {
+		if s.ID == "deadbeef" {
+			recovered = s
+			break
+		}
+	}
+	if recovered == nil {
+		t.Fatalf("expected recovered session in List result, got %#v", sessions)
+	}
+	if recovered.Model != "google/gemini-3.1-pro-preview" {
+		t.Fatalf("expected recovered model, got %q", recovered.Model)
+	}
+	if recovered.Task != "log only task" {
+		t.Fatalf("expected recovered task, got %q", recovered.Task)
+	}
+	if recovered.Cwd != "/tmp/project" {
+		t.Fatalf("expected recovered cwd, got %q", recovered.Cwd)
+	}
+	if recovered.Turns != 1 {
+		t.Fatalf("expected recovered turns=1, got %d", recovered.Turns)
+	}
+	if math.Abs(recovered.TotalCost-0.0123) > 0.000001 {
+		t.Fatalf("expected recovered cost, got %f", recovered.TotalCost)
+	}
+	if !recovered.StatsCached {
+		t.Fatal("expected recovered stats to be marked cached")
+	}
+
+	dir, err := DataDir()
+	if err != nil {
+		t.Fatalf("DataDir returned error: %v", err)
+	}
+	if _, err := os.Stat(sessionFilePath(dir, "deadbeef")); err != nil {
+		t.Fatalf("expected recovered session JSON to be persisted: %v", err)
+	}
+
+	loaded, err := Load("deadbeef")
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if loaded.Model != recovered.Model || loaded.Task != recovered.Task || loaded.Cwd != recovered.Cwd ||
+		loaded.Turns != recovered.Turns || math.Abs(loaded.TotalCost-recovered.TotalCost) > 0.000001 ||
+		!loaded.StatsCached {
+		t.Fatalf("persisted recovered session mismatch: loaded=%#v recovered=%#v", loaded, recovered)
+	}
+}
+
 func mustParseTime(t *testing.T, raw string) time.Time {
 	t.Helper()
 	parsed, err := time.Parse(time.RFC3339Nano, raw)

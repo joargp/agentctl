@@ -74,6 +74,24 @@ func TestGetSessionLogStatsUsesCachedValuesForCompletedSession(t *testing.T) {
 	}
 }
 
+func TestGetSessionLogStatsUsesExplicitZeroCacheForCompletedSession(t *testing.T) {
+	logFile := writeSessionLog(t,
+		`{"type":"turn_end","message":{"usage":{"cost":{"total":0.01}}}}`,
+	)
+	s := &session.Session{
+		LogFile:     logFile,
+		StatsCached: true,
+	}
+
+	stats := getSessionLogStats(s, false)
+	if stats.Turns != 0 {
+		t.Fatalf("expected explicitly cached zero turns, got %d", stats.Turns)
+	}
+	if stats.TotalCost != 0 {
+		t.Fatalf("expected explicitly cached zero cost, got %f", stats.TotalCost)
+	}
+}
+
 func TestGetSessionLogStatsFallsBackToLogWhenCacheMissing(t *testing.T) {
 	logFile := writeSessionLog(t,
 		`{"type":"turn_end","message":{"usage":{"cost":{"total":0.01}}}}`,
@@ -87,6 +105,69 @@ func TestGetSessionLogStatsFallsBackToLogWhenCacheMissing(t *testing.T) {
 	}
 	if math.Abs(stats.TotalCost-0.03) > 0.000001 {
 		t.Fatalf("expected total cost ~0.03 from log, got %f", stats.TotalCost)
+	}
+}
+
+func TestGetSessionLogStatsScansAndPersistsMissingCompletedCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	logFile := writeSessionLog(t,
+		`{"type":"turn_end","message":{"usage":{"cost":{"total":0.01}}}}`,
+		`{"type":"turn_end","message":{"usage":{"cost":{"total":0.02}}}}`,
+	)
+	s := &session.Session{
+		ID:          "statmiss",
+		Model:       "gpt-test",
+		Task:        "cache missing stats",
+		Cwd:         home,
+		TmuxSession: "agentctl-statmiss",
+		LogFile:     logFile,
+		StartedAt:   time.Now().Add(-time.Minute),
+	}
+	saveSessionForTest(t, s)
+
+	stats := getSessionLogStats(s, false)
+	if stats.Turns != 2 {
+		t.Fatalf("expected 2 turns from log, got %d", stats.Turns)
+	}
+	if math.Abs(stats.TotalCost-0.03) > 0.000001 {
+		t.Fatalf("expected total cost ~0.03 from log, got %f", stats.TotalCost)
+	}
+	if s.Turns != 2 || math.Abs(s.TotalCost-0.03) > 0.000001 || !s.StatsCached {
+		t.Fatalf("expected in-memory session stats to be cached, got %#v", s)
+	}
+
+	loaded, err := session.Load(s.ID)
+	if err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	if loaded.Turns != 2 {
+		t.Fatalf("expected persisted turns=2, got %d", loaded.Turns)
+	}
+	if math.Abs(loaded.TotalCost-0.03) > 0.000001 {
+		t.Fatalf("expected persisted total cost ~0.03, got %f", loaded.TotalCost)
+	}
+	if !loaded.StatsCached {
+		t.Fatal("expected persisted stats_cached marker")
+	}
+}
+
+func TestGetSessionLogStatsScansRunningSessionDespiteCacheMarker(t *testing.T) {
+	logFile := writeSessionLog(t,
+		`{"type":"turn_end","message":{"usage":{"cost":{"total":0.04}}}}`,
+	)
+	s := &session.Session{
+		LogFile:     logFile,
+		StatsCached: true,
+	}
+
+	stats := getSessionLogStats(s, true)
+	if stats.Turns != 1 {
+		t.Fatalf("expected running session stats to scan one turn, got %d", stats.Turns)
+	}
+	if math.Abs(stats.TotalCost-0.04) > 0.000001 {
+		t.Fatalf("expected running session cost from log, got %f", stats.TotalCost)
 	}
 }
 
@@ -145,6 +226,9 @@ func TestRunWatchCachesSessionStatsAfterExit(t *testing.T) {
 	}
 	if math.Abs(loaded.TotalCost-0.03) > 0.000001 {
 		t.Fatalf("expected cached total cost ~0.03, got %f", loaded.TotalCost)
+	}
+	if !loaded.StatsCached {
+		t.Fatal("expected stats cache marker to be persisted")
 	}
 }
 

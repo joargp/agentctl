@@ -31,6 +31,8 @@ var (
 	lsQuiet   bool
 )
 
+var listTmuxSessionsForLs = tmux.ListSessions
+
 func init() {
 	lsCmd.Flags().StringVar(&lsModel, "model", "", "filter by model name (substring match)")
 	lsCmd.Flags().StringVar(&lsSince, "since", "", "show only sessions started within this duration (e.g. 1h, 30m, 2d)")
@@ -54,6 +56,15 @@ func parseDuration(s string) (time.Duration, error) {
 }
 
 func runLs(_ *cobra.Command, _ []string) error {
+	var sinceFilter time.Duration
+	if lsSince != "" {
+		var err error
+		sinceFilter, err = parseDuration(lsSince)
+		if err != nil {
+			return fmt.Errorf("invalid --since duration: %w", err)
+		}
+	}
+
 	sessions, err := session.List()
 	if err != nil {
 		return err
@@ -68,19 +79,17 @@ func runLs(_ *cobra.Command, _ []string) error {
 		return sessions[i].StartedAt.After(sessions[j].StartedAt)
 	})
 
-	var sinceFilter time.Duration
-	if lsSince != "" {
-		var err error
-		sinceFilter, err = parseDuration(lsSince)
-		if err != nil {
-			return fmt.Errorf("invalid --since duration: %w", err)
-		}
-	}
-
 	// Quick-exit for quiet/scripting mode.
 	if lsQuiet {
-		return runLsQuiet(sessions, sinceFilter)
+		var runningSessions map[string]bool
+		useRunningSnapshot := lsRunning || lsDone
+		if useRunningSnapshot {
+			runningSessions = listTmuxSessionsForLs()
+		}
+		return runLsQuiet(sessions, sinceFilter, runningSessions, useRunningSnapshot)
 	}
+
+	runningSessions := listTmuxSessionsForLs()
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	// Check if any session has a name set.
@@ -99,7 +108,7 @@ func runLs(_ *cobra.Command, _ []string) error {
 	}
 
 	for _, s := range sessions {
-		running := tmux.SessionExists(s.TmuxSession)
+		running := runningSessions[s.TmuxSession]
 		if !includeLsSession(s, running, sinceFilter) {
 			continue
 		}
@@ -136,9 +145,12 @@ func runLs(_ *cobra.Command, _ []string) error {
 	return w.Flush()
 }
 
-func runLsQuiet(sessions []*session.Session, sinceFilter time.Duration) error {
+func runLsQuiet(sessions []*session.Session, sinceFilter time.Duration, runningSessions map[string]bool, useRunningSnapshot bool) error {
 	for _, s := range sessions {
-		running := tmux.SessionExists(s.TmuxSession)
+		running := false
+		if useRunningSnapshot {
+			running = runningSessions[s.TmuxSession]
+		}
 		if !includeLsSession(s, running, sinceFilter) {
 			continue
 		}

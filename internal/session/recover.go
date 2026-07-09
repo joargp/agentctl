@@ -2,12 +2,20 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+)
+
+var (
+	recoverableTypeKey          = []byte(`"type"`)
+	recoverableSessionType      = []byte(`"session"`)
+	recoverableMessageStartType = []byte(`"message_start"`)
+	recoverableTurnEndType      = []byte(`"turn_end"`)
 )
 
 func recoverSession(dir, id string) (*Session, error) {
@@ -28,6 +36,7 @@ func recoverSession(dir, id string) (*Session, error) {
 	if err := populateFromLog(s); err != nil {
 		return nil, err
 	}
+	s.StatsCached = true
 
 	if s.StartedAt.IsZero() {
 		info, err := os.Stat(logFile)
@@ -59,6 +68,11 @@ func populateFromLog(s *Session) error {
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 
 	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !hasRecoverableEventType(line) {
+			continue
+		}
+
 		var ev struct {
 			Type      string          `json:"type"`
 			Timestamp json.RawMessage `json:"timestamp"`
@@ -79,7 +93,7 @@ func populateFromLog(s *Session) error {
 				} `json:"usage"`
 			} `json:"message"`
 		}
-		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
+		if err := json.Unmarshal(line, &ev); err != nil {
 			continue
 		}
 
@@ -140,4 +154,41 @@ func populateFromLog(s *Session) error {
 		return fmt.Errorf("scan %s: %w", s.LogFile, err)
 	}
 	return nil
+}
+
+func hasRecoverableEventType(line []byte) bool {
+	for offset := 0; offset < len(line); {
+		idx := bytes.Index(line[offset:], recoverableTypeKey)
+		if idx < 0 {
+			return false
+		}
+
+		pos := offset + idx + len(recoverableTypeKey)
+		pos = skipJSONWhitespace(line, pos)
+		if pos < len(line) && line[pos] == ':' {
+			pos++
+			pos = skipJSONWhitespace(line, pos)
+			if bytes.HasPrefix(line[pos:], recoverableSessionType) ||
+				bytes.HasPrefix(line[pos:], recoverableMessageStartType) ||
+				bytes.HasPrefix(line[pos:], recoverableTurnEndType) {
+				return true
+			}
+		}
+
+		offset += idx + len(recoverableTypeKey)
+	}
+
+	return false
+}
+
+func skipJSONWhitespace(line []byte, pos int) int {
+	for pos < len(line) {
+		switch line[pos] {
+		case ' ', '\t', '\n', '\r':
+			pos++
+		default:
+			return pos
+		}
+	}
+	return pos
 }

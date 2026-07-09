@@ -26,6 +26,7 @@ type Session struct {
 	StartedAt   time.Time `json:"started_at"`
 	Turns       int       `json:"turns,omitempty"`
 	TotalCost   float64   `json:"total_cost,omitempty"`
+	StatsCached bool      `json:"stats_cached,omitempty"`
 }
 
 // Label returns the display name for monitor output.
@@ -140,6 +141,10 @@ func List() ([]*Session, error) {
 		if err != nil {
 			continue
 		}
+		// Persist recovered log-only metadata on a best-effort basis so future
+		// listings can load the session JSON directly instead of rescanning the
+		// entire log. A write failure must not hide the recovered session.
+		_ = Save(s)
 		sessionsByID[id] = s
 	}
 

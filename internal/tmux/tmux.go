@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // SocketPath is the tmux socket used for all agentctl sessions.
@@ -48,6 +49,31 @@ func NewSession(name string, command ...string) error {
 func SessionExists(name string) bool {
 	full := []string{"-S", SocketPath, "has-session", "-t", name}
 	return exec.Command("tmux", full...).Run() == nil
+}
+
+// ListSessions returns the currently live tmux session names as a membership
+// set. It mirrors SessionExists failure semantics: if tmux is missing, the
+// server/socket does not exist, or there are no sessions, callers get an empty
+// set rather than a fatal error.
+func ListSessions() map[string]bool {
+	full := []string{"-S", SocketPath, "list-sessions", "-F", "#{session_name}"}
+	out, err := exec.Command("tmux", full...).Output()
+	if err != nil {
+		return map[string]bool{}
+	}
+	return parseSessionListOutput(out)
+}
+
+func parseSessionListOutput(out []byte) map[string]bool {
+	sessions := make(map[string]bool)
+	for _, line := range strings.Split(string(out), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		sessions[name] = true
+	}
+	return sessions
 }
 
 // KillSession destroys a session.

@@ -64,19 +64,28 @@ func getSessionLogStats(s *session.Session, running bool) logStats {
 	if running {
 		return scanLogStats(s.LogFile)
 	}
-	// Use cached values if available. Turns > 0 is the cache indicator since
-	// every completed session has at least one turn. TotalCost can legitimately
-	// be zero (e.g. no cost tracking), so we don't use it as a cache signal.
-	if s.Turns > 0 {
+	// Use cached values if available. StatsCached explicitly records that the
+	// log has been scanned, including legitimate zero-turn/zero-cost results.
+	// Turns > 0 is retained as the backward-compatible cache indicator for
+	// sessions written before StatsCached existed.
+	if s.StatsCached || s.Turns > 0 {
 		return logStats{Turns: s.Turns, TotalCost: s.TotalCost}
 	}
-	return scanLogStats(s.LogFile)
+	stats := scanLogStats(s.LogFile)
+	s.Turns = stats.Turns
+	s.TotalCost = stats.TotalCost
+	s.StatsCached = true
+	if s.ID != "" {
+		_ = session.Save(s)
+	}
+	return stats
 }
 
 func cacheSessionLogStats(s *session.Session) error {
 	stats := scanLogStats(s.LogFile)
 	s.Turns = stats.Turns
 	s.TotalCost = stats.TotalCost
+	s.StatsCached = true
 	return session.Save(s)
 }
 
