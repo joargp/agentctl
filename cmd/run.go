@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +24,11 @@ const (
 	muninChannelIDEnv = "MUNIN_CHANNEL_ID"
 	muninThreadTsEnv  = "MUNIN_THREAD_TS"
 	piSessionIDEnv    = "PI_SESSION_ID"
+
+	// Set in the environment of every spawned session so nested `agentctl run`
+	// calls can be detected and blocked (see checkSpawnDepth).
+	agentctlDepthEnv     = "AGENTCTL_DEPTH"
+	agentctlSessionIDEnv = "AGENTCTL_SESSION_ID"
 )
 
 var runCmd = &cobra.Command{
@@ -68,6 +74,7 @@ var (
 	runNotifyEventThread  string
 	runNotifyCommands     []string
 	runStartupTimeout     time.Duration
+	runAllowNested        bool
 )
 
 func init() {
@@ -93,10 +100,17 @@ func init() {
 		"executable path to invoke with completion JSON on stdin when the agent finishes (repeatable)")
 	runCmd.Flags().DurationVar(&runStartupTimeout, "startup-timeout", 60*time.Second,
 		"wait for provider-backed output before reporting the session as started")
+	runCmd.Flags().BoolVar(&runAllowNested, "allow-nested", false,
+		"allow spawning from inside an agentctl-spawned session (blocked by default to prevent runaway recursion)")
 	rootCmd.AddCommand(runCmd)
 }
 
 func runRun(_ *cobra.Command, _ []string) error {
+	childDepth, err := checkSpawnDepth(getenv(agentctlDepthEnv), runAllowNested)
+	if err != nil {
+		return err
+	}
+
 	notifyOptions, err := resolveWatcherNotifyOptions(runNotifyMunin, getenv)
 	if err != nil {
 		return err
@@ -177,7 +191,7 @@ func runRun(_ *cobra.Command, _ []string) error {
 	// supervisor keeps pi in its own process group, tears down the full child
 	// tree on every exit path, and records the runtime PID/PGID for external
 	// cleanup during kill/watch flows.
-	script := buildRunScript(id, self, runRender)
+	script := buildRunScript(id, self, runRender, childDepth)
 	if err := os.WriteFile(scriptFile, []byte(script), 0o755); err != nil {
 		cleanupStartFailure()
 		return fmt.Errorf("write script: %w", err)
@@ -304,15 +318,42 @@ func looksLikeDynamicLinker(path string) bool {
 	return strings.Contains(path, "ld-musl") || strings.Contains(path, "ld-linux")
 }
 
-func buildRunScript(id, self string, render bool) string {
+// checkSpawnDepth guards against runaway recursive spawning. Every session
+// started by `agentctl run` carries AGENTCTL_DEPTH in its environment, so a
+// nested `agentctl run` (an agent spawning subagents that spawn agents...)
+// sees a non-zero depth. By default spawning from inside a spawned session is
+// refused; --allow-nested permits exactly one more level per explicit opt-in.
+// Returns the depth to stamp into the new session's environment.
+func checkSpawnDepth(depthEnv string, allowNested bool) (int, error) {
+	depth := 0
+	if v := strings.TrimSpace(depthEnv); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			// The variable was set but is garbage: we are still clearly inside
+			// a spawned session, so stay conservative and treat it as depth 1.
+			n = 1
+		}
+		depth = n
+	}
+	if depth >= 1 && !allowNested {
+		return 0, fmt.Errorf(
+			"refusing to spawn: already inside an agentctl-spawned session (%s=%d); nested spawning is blocked to prevent runaway agent recursion — pass --allow-nested to override",
+			agentctlDepthEnv, depth)
+	}
+	return depth + 1, nil
+}
+
+func buildRunScript(id, self string, render bool, depth int) string {
 	renderFlag := ""
 	if render {
 		renderFlag = " --render"
 	}
 	return fmt.Sprintf(`#!/bin/sh
 set -e
+export %s=%d
+export %s=%s
 exec %s supervise%s %s
-`, shellQuote(self), renderFlag, shellQuote(id))
+`, agentctlDepthEnv, depth, agentctlSessionIDEnv, shellQuote(id), shellQuote(self), renderFlag, shellQuote(id))
 }
 
 type startupState int

@@ -370,7 +370,7 @@ func TestResolveExecutableFallsBackFromMuslLinkerToArgv0(t *testing.T) {
 }
 
 func TestBuildRunScriptUsesRecorder(t *testing.T) {
-	script := buildRunScript("abc123", "/usr/local/bin/agentctl", false)
+	script := buildRunScript("abc123", "/usr/local/bin/agentctl", false, 1)
 
 	if !strings.Contains(script, "exec '/usr/local/bin/agentctl' supervise 'abc123'") {
 		t.Fatalf("expected run script to exec supervisor, got %q", script)
@@ -381,10 +381,76 @@ func TestBuildRunScriptUsesRecorder(t *testing.T) {
 }
 
 func TestBuildRunScriptWithRender(t *testing.T) {
-	script := buildRunScript("abc123", "/usr/local/bin/agentctl", true)
+	script := buildRunScript("abc123", "/usr/local/bin/agentctl", true, 1)
 
 	if !strings.Contains(script, "supervise --render 'abc123'") {
 		t.Fatalf("expected --render flag in supervisor invocation, got %q", script)
+	}
+}
+
+func TestBuildRunScriptExportsDepthAndSessionID(t *testing.T) {
+	script := buildRunScript("abc123", "/usr/local/bin/agentctl", false, 2)
+
+	if !strings.Contains(script, "export AGENTCTL_DEPTH=2") {
+		t.Fatalf("expected run script to export spawn depth, got %q", script)
+	}
+	if !strings.Contains(script, "export AGENTCTL_SESSION_ID='abc123'") {
+		t.Fatalf("expected run script to export session id, got %q", script)
+	}
+}
+
+func TestCheckSpawnDepthAllowsTopLevel(t *testing.T) {
+	for _, env := range []string{"", "  "} {
+		depth, err := checkSpawnDepth(env, false)
+		if err != nil {
+			t.Fatalf("expected top-level spawn to be allowed for env %q, got %v", env, err)
+		}
+		if depth != 1 {
+			t.Fatalf("expected child depth 1, got %d", depth)
+		}
+	}
+}
+
+func TestCheckSpawnDepthBlocksNested(t *testing.T) {
+	_, err := checkSpawnDepth("1", false)
+	if err == nil {
+		t.Fatal("expected nested spawn to be blocked")
+	}
+	if !strings.Contains(err.Error(), "--allow-nested") {
+		t.Fatalf("expected error to mention the override flag, got %v", err)
+	}
+}
+
+func TestCheckSpawnDepthBlocksGarbageValue(t *testing.T) {
+	// A set-but-garbage depth still means we're inside a spawned session.
+	if _, err := checkSpawnDepth("banana", false); err == nil {
+		t.Fatal("expected garbage depth value to be treated as nested and blocked")
+	}
+}
+
+func TestCheckSpawnDepthAllowNestedIncrements(t *testing.T) {
+	depth, err := checkSpawnDepth("1", true)
+	if err != nil {
+		t.Fatalf("expected --allow-nested to permit spawn, got %v", err)
+	}
+	if depth != 2 {
+		t.Fatalf("expected child depth 2, got %d", depth)
+	}
+}
+
+func TestRunRefusesNestedSpawn(t *testing.T) {
+	t.Setenv("AGENTCTL_DEPTH", "1")
+
+	prevAllowNested := runAllowNested
+	defer func() { runAllowNested = prevAllowNested }()
+	runAllowNested = false
+
+	err := runRun(nil, nil)
+	if err == nil {
+		t.Fatal("expected runRun to refuse spawning inside a spawned session")
+	}
+	if !strings.Contains(err.Error(), "refusing to spawn") {
+		t.Fatalf("expected recursion refusal error, got %v", err)
 	}
 }
 

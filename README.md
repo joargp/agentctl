@@ -59,6 +59,10 @@ id=$(agentctl run --model claude-opus-4-6 --name opus --task "..." 2>/dev/null)
 
 Exactly one of `--task` or `--task-file` must be provided.
 
+### Nested spawning is blocked by default
+
+Every spawned session gets `AGENTCTL_DEPTH` and `AGENTCTL_SESSION_ID` in its environment. If an agent inside a spawned session runs `agentctl run` itself, the spawn is refused — this prevents runaway recursion where subagents keep spawning subagents. To deliberately allow one more level, pass `--allow-nested` (each deeper level requires its own explicit `--allow-nested`).
+
 ## Reading output
 
 ```bash
