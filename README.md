@@ -36,6 +36,7 @@ agentctl kill $id       # kill the session, preserve its log
 | `attach <id>` | Attach terminal for manual intervention |
 | `costs` | Show per-session and total API costs |
 | `kill <id> / --all` | Kill session(s), preserve logs |
+| `prune --older-than <dur>` | Remove old finished session logs; keep metadata |
 
 ## Running agents
 
@@ -77,6 +78,20 @@ agentctl dashboard --port 8080
 ```
 
 This opens a local browser dashboard for session history, live logs, and killing running sessions.
+
+## Reclaiming disk space
+
+Completed sessions keep their full NDJSON logs, which can grow to gigabytes over time. `prune` deletes the bulky log artifacts of old finished sessions while keeping the session JSON, so `ls` and `costs` still show task, model, turns, and cost afterwards:
+
+```bash
+# Preview what would be reclaimed
+agentctl prune --older-than 30d --dry-run
+
+# Delete old finished session logs (session history in ls/costs is kept)
+agentctl prune --older-than 30d
+```
+
+Running sessions are always skipped, and session metadata is never deleted — this is not a full history wipe.
 
 ## Completion notifications
 
