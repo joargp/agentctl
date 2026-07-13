@@ -8,6 +8,7 @@ import (
 var runDashboard = dashboard.Run
 
 var dashboardPort int
+var dashboardNoOpen bool
 
 var dashboardCmd = &cobra.Command{
 	Use:   "dashboard",
@@ -15,11 +16,12 @@ var dashboardCmd = &cobra.Command{
 	Long:  "Run the local browser dashboard for inspecting, streaming, and killing agentctl sessions.",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runDashboard(dashboardPort)
+		return runDashboard(dashboardPort, !dashboardNoOpen)
 	},
 }
 
 func init() {
 	dashboardCmd.Flags().IntVar(&dashboardPort, "port", 8080, "port to run the dashboard server on")
+	dashboardCmd.Flags().BoolVar(&dashboardNoOpen, "no-open", false, "do not open the dashboard in a browser")
 	rootCmd.AddCommand(dashboardCmd)
 }

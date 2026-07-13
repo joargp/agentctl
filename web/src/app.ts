@@ -14,6 +14,14 @@ interface Session {
 
 // Global state
 let sessions: Session[] = [];
+let totalSessions = 0;
+let runningSessions = 0;
+let currentOffset = 0;
+let lastSuccessfulOffset = 0;
+let sessionsFetchInFlight = false;
+const sessionPageSize = 100;
+let currentPageLimit = sessionPageSize;
+let sessionsListNeedsRender = false;
 let selectedSessionId: string | null = null;
 let activeFilter: 'all' | 'running' | 'done' = 'all';
 let searchQuery = '';
@@ -28,6 +36,9 @@ const filterAllBtn = document.getElementById('filter-all') as HTMLButtonElement;
 const filterRunningBtn = document.getElementById('filter-running') as HTMLButtonElement;
 const filterDoneBtn = document.getElementById('filter-done') as HTMLButtonElement;
 const refreshSessionsBtn = document.getElementById('refresh-sessions') as HTMLButtonElement;
+const newerSessionsBtn = document.getElementById('newer-sessions') as HTMLButtonElement;
+const olderSessionsBtn = document.getElementById('older-sessions') as HTMLButtonElement;
+const loadedCountEl = document.getElementById('loaded-count') as HTMLDivElement;
 
 const emptyStateEl = document.getElementById('empty-state') as HTMLDivElement;
 const detailContentEl = document.getElementById('detail-content') as HTMLDivElement;
@@ -96,6 +107,8 @@ document.addEventListener('DOMContentLoaded', () => {
   filterRunningBtn.addEventListener('click', () => setFilter('running'));
   filterDoneBtn.addEventListener('click', () => setFilter('done'));
   refreshSessionsBtn.addEventListener('click', () => fetchSessions(true));
+  newerSessionsBtn.addEventListener('click', () => navigateSessions(-currentPageLimit));
+  olderSessionsBtn.addEventListener('click', () => navigateSessions(currentPageLimit));
   
   toggleTaskBtn.addEventListener('click', toggleTaskCollapse);
   killSessionBtn.addEventListener('click', handleKillSession);
@@ -114,6 +127,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Fetch sessions list from backend
 async function fetchSessions(showSpinner = false) {
+  if (sessionsFetchInFlight) return;
+  sessionsFetchInFlight = true;
+  updatePaginationFooter();
+
   if (showSpinner) {
     sessionsListEl.innerHTML = `
       <div class="flex flex-col items-center justify-center h-48 text-zinc-500 space-y-2">
@@ -125,12 +142,24 @@ async function fetchSessions(showSpinner = false) {
   }
 
   try {
-    const res = await fetch('/api/sessions');
+    const res = await fetch(`/api/sessions?offset=${currentOffset}&limit=${sessionPageSize}`, { cache: 'no-store' });
     if (!res.ok) throw new Error('Failed to fetch sessions');
-    sessions = await res.json();
+    const page = await res.json() as Session[];
+    totalSessions = headerNumber(res, 'X-Total-Count', totalSessions);
+    runningSessions = headerNumber(res, 'X-Running-Count', runningSessions);
+    currentOffset = headerNumber(res, 'X-Offset', currentOffset);
+    lastSuccessfulOffset = currentOffset;
+    currentPageLimit = headerPositiveNumber(res, 'X-Limit', currentPageLimit);
+
+    const previous = sessions;
+    sessions = page;
     updateStats();
-    renderSessionsList();
+    if (showSpinner || sessionsListNeedsRender || !sameSessionList(previous, sessions)) {
+      renderSessionsList();
+    }
+    sessionsListNeedsRender = false;
   } catch (err) {
+    currentOffset = lastSuccessfulOffset;
     console.error('Error fetching sessions:', err);
     if (showSpinner) {
       sessionsListEl.innerHTML = `
@@ -140,20 +169,65 @@ async function fetchSessions(showSpinner = false) {
           <span class="text-[10px] text-zinc-500 mt-1">Make sure the Go server is running.</span>
         </div>
       `;
+      sessionsListNeedsRender = true;
       (window as any).lucide?.createIcons();
     }
+  } finally {
+    sessionsFetchInFlight = false;
+    updatePaginationFooter();
   }
+}
+
+function navigateSessions(delta: number) {
+  if (sessionsFetchInFlight) return;
+  currentOffset = Math.max(0, currentOffset + delta);
+  fetchSessions(true);
+}
+
+function updatePaginationFooter() {
+  const start = totalSessions === 0 ? 0 : currentOffset + 1;
+  const end = Math.min(currentOffset + sessions.length, totalSessions);
+  loadedCountEl.textContent = `${start}–${end} of ${totalSessions}`;
+  newerSessionsBtn.disabled = sessionsFetchInFlight || currentOffset === 0;
+  olderSessionsBtn.disabled = sessionsFetchInFlight || currentOffset + sessions.length >= totalSessions;
+}
+
+function headerNumber(res: Response, name: string, fallback: number): number {
+  const value = Number(res.headers.get(name));
+  return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+}
+
+function headerPositiveNumber(res: Response, name: string, fallback: number): number {
+  const value = Number(res.headers.get(name));
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function sameSessionList(left: Session[], right: Session[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((session, index) => {
+    const other = right[index];
+    return session.id === other.id &&
+      session.name === other.name &&
+      session.model === other.model &&
+      session.task === other.task &&
+      session.cwd === other.cwd &&
+      session.started_at === other.started_at &&
+      session.status === other.status &&
+      session.turns === other.turns &&
+      session.total_cost === other.total_cost &&
+      session.last_state === other.last_state &&
+      session.last_detail === other.last_detail;
+  });
 }
 
 // Update stats on sidebar
 function updateStats() {
-  const total = sessions.length;
-  const running = sessions.filter(s => s.status === 'running').length;
-  const totalCost = sessions.reduce((sum, s) => sum + (s.total_cost || 0), 0);
+  const total = totalSessions || sessions.length;
+  const pageCost = sessions.reduce((sum, s) => sum + (s.total_cost || 0), 0);
 
   document.getElementById('stat-total')!.textContent = total.toString();
-  document.getElementById('stat-running')!.textContent = running.toString();
-  document.getElementById('stat-cost')!.textContent = `$${totalCost.toFixed(3)}`;
+  document.getElementById('stat-running')!.textContent = runningSessions.toString();
+  document.getElementById('stat-cost')!.textContent = `$${pageCost.toFixed(3)}`;
 }
 
 // Handle filters

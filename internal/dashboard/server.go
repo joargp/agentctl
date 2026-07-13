@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -25,9 +28,40 @@ import (
 var staticFiles embed.FS
 
 var (
-	cacheMutex     sync.RWMutex
-	sessionCache   = make(map[string]APISession)
-	loadedSessions = make(map[string]*session.Session)
+	cacheMutex             sync.RWMutex
+	sessionCache           = make(map[string]APISession)
+	loadedSessions         = make(map[string]*session.Session)
+	loadedMetadataModTimes = make(map[string]time.Time)
+	liveSessionCache       = make(map[string]liveAPISession)
+
+	// Kept as a variable so dashboard behavior can be tested without tmux.
+	listTmuxSessionsForDashboard = tmux.ListSessions
+
+	// These hooks keep filesystem-index behavior deterministic in tests.
+	sessionDataDirForDashboard    = session.DataDir
+	statSessionIndexFile          = os.Stat
+	dashboardNow                  = time.Now
+	dashboardIndexTTL             = 5 * time.Second
+	buildSessionIndexForDashboard = buildSessionIndex
+	// Test hook invoked after an index build has installed (or failed).
+	onSessionIndexRefreshForDashboard = func() {}
+)
+
+// sessionIndexCache holds an immutable, sorted directory index. Metadata is
+// intentionally loaded separately, and only for pages requested by a client.
+// A stale index is usable while one goroutine refreshes it in the background.
+type sessionIndexCache struct {
+	files       []sessionFile
+	builtAt     time.Time
+	initialized bool
+	refreshing  bool
+	ready       chan struct{}
+	generation  uint64
+}
+
+var (
+	indexCacheMutex sync.Mutex
+	indexCache      sessionIndexCache
 )
 
 type APISession struct {
@@ -42,6 +76,11 @@ type APISession struct {
 	TotalCost  float64   `json:"total_cost"`
 	LastState  string    `json:"last_state"`
 	LastDetail string    `json:"last_detail"`
+}
+
+type liveAPISession struct {
+	api        APISession
+	logModTime time.Time
 }
 
 type logStats struct {
@@ -80,7 +119,9 @@ func readTail(path string, n int64) []byte {
 }
 
 func deriveLastActivity(logFile string, running bool) (string, string) {
-	data := readTail(logFile, 1024*1024)
+	// A compact tail is enough to identify the current activity while keeping
+	// the first page responsive when several agents have multi-megabyte logs.
+	data := readTail(logFile, 128*1024)
 	if len(data) == 0 {
 		if running {
 			return "starting", ""
@@ -192,13 +233,52 @@ func scanLogStats(logFile string) logStats {
 }
 
 func getSessionLogStats(s *session.Session, running bool) logStats {
-	if running {
-		return scanLogStats(s.LogFile)
-	}
-	if s.Turns > 0 {
+	// StatsCached explicitly records a completed log scan, including valid
+	// zero-turn sessions. Turns > 0 remains the compatibility signal for
+	// sessions created before StatsCached was added. For live sessions this
+	// avoids rescanning a growing multi-megabyte log when a recent cached value
+	// is already available.
+	if s.StatsCached || s.Turns > 0 {
 		return logStats{Turns: s.Turns, TotalCost: s.TotalCost}
 	}
+	if running {
+		// The selected session's log stream remains the live source of truth.
+		// Avoid a full historical scan merely to populate sidebar aggregates.
+		return logStats{}
+	}
 	return scanLogStats(s.LogFile)
+}
+
+func isRunning(s *session.Session, runningSessions map[string]bool) bool {
+	return runningSessions[s.TmuxSession]
+}
+
+func makeAPISession(s *session.Session, running bool) APISession {
+	status := "done"
+	if running {
+		status = "running"
+	}
+
+	stats := getSessionLogStats(s, running)
+	apiSess := APISession{
+		ID:        s.ID,
+		Name:      s.Name,
+		Model:     s.Model,
+		Task:      s.Task,
+		Cwd:       s.Cwd,
+		StartedAt: s.StartedAt,
+		Status:    status,
+		Turns:     stats.Turns,
+		TotalCost: stats.TotalCost,
+	}
+
+	// The dashboard only displays activity for live sessions. Avoid reading and
+	// parsing completed session log tails while indexing history.
+	if running {
+		apiSess.LastState, apiSess.LastDetail = deriveLastActivity(s.LogFile, true)
+	}
+
+	return apiSess
 }
 
 func getAgentctlPath() string {
@@ -214,10 +294,27 @@ func getAgentctlPath() string {
 	return "agentctl"
 }
 
-func Run(port int) error {
-	// Start progressive background indexing
-	startIndexingBackground()
+func browserCommand(goos, url string) (string, []string) {
+	switch goos {
+	case "darwin":
+		return "open", []string{url}
+	case "windows":
+		return "rundll32", []string{"url.dll,FileProtocolHandler", url}
+	default:
+		return "xdg-open", []string{url}
+	}
+}
 
+func openBrowser(url string) error {
+	name, args := browserCommand(runtime.GOOS, url)
+	return exec.Command(name, args...).Run()
+}
+
+func Run(port int, autoOpen bool) error {
+	return runDashboard(port, autoOpen, openBrowser, http.Serve)
+}
+
+func runDashboard(port int, autoOpen bool, opener func(string) error, serve func(net.Listener, http.Handler) error) error {
 	mux := http.NewServeMux()
 
 	// 1. Root and Static Files Routes
@@ -250,18 +347,38 @@ func Run(port int) error {
 	mux.HandleFunc("GET /api/sessions/{id}/logs", handleSessionLogs)
 	mux.HandleFunc("POST /api/sessions/{id}/kill", handleSessionKill)
 
-	addr := fmt.Sprintf(":%d", port)
-	fmt.Printf("agentctl dashboard running on http://localhost:%d\n", port)
-	return http.ListenAndServe(addr, mux)
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return err
+	}
+	actualPort := port
+	if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
+		actualPort = tcpAddr.Port
+	}
+	url := fmt.Sprintf("http://localhost:%d", actualPort)
+	fmt.Printf("agentctl dashboard running on %s\n", url)
+	if autoOpen {
+		go func() {
+			if err := opener(url); err != nil {
+				log.Printf("could not open dashboard in browser: %v", err)
+			}
+		}()
+	}
+	return serve(listener, mux)
 }
 
 type sessionFile struct {
-	id      string
-	modTime time.Time
+	id              string
+	metadataModTime time.Time
+	logModTime      time.Time
+	modTime         time.Time // Effective sort time: the newer of metadata and log.
 }
 
-func getSessionFilesSorted() ([]sessionFile, error) {
-	dir, err := session.DataDir()
+// buildSessionIndex scans names and modification times only; it never reads
+// metadata or log contents. Both metadata and logs are statted so a completed
+// session remains ordered by its most recent log activity after it exits tmux.
+func buildSessionIndex(_ map[string]bool) ([]sessionFile, error) {
+	dir, err := sessionDataDirForDashboard()
 	if err != nil {
 		return nil, err
 	}
@@ -272,16 +389,20 @@ func getSessionFilesSorted() ([]sessionFile, error) {
 		return nil, err
 	}
 
-	filesMap := make(map[string]time.Time)
+	filesMap := make(map[string]sessionFile)
 
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".json")
-		info, err := e.Info()
+		info, err := statSessionIndexFile(filepath.Join(sessDir, e.Name()))
 		if err == nil {
-			filesMap[id] = info.ModTime()
+			filesMap[id] = sessionFile{
+				id:              id,
+				metadataModTime: info.ModTime(),
+				modTime:         info.ModTime(),
+			}
 		}
 	}
 
@@ -295,185 +416,276 @@ func getSessionFilesSorted() ([]sessionFile, error) {
 			continue
 		}
 		id := strings.TrimSuffix(e.Name(), ".log")
-		info, err := e.Info()
+		info, err := statSessionIndexFile(filepath.Join(logDir, e.Name()))
 		if err == nil {
-			if t, ok := filesMap[id]; !ok || info.ModTime().After(t) {
-				filesMap[id] = info.ModTime()
+			sf := filesMap[id]
+			sf.id = id
+			sf.logModTime = info.ModTime()
+			if sf.modTime.IsZero() || info.ModTime().After(sf.modTime) {
+				sf.modTime = info.ModTime()
 			}
+			filesMap[id] = sf
 		}
 	}
 
 	var list []sessionFile
-	for id, t := range filesMap {
-		list = append(list, sessionFile{id: id, modTime: t})
+	for _, sf := range filesMap {
+		list = append(list, sf)
 	}
 
 	sort.Slice(list, func(i, j int) bool {
+		if list[i].modTime.Equal(list[j].modTime) {
+			return list[i].id < list[j].id
+		}
 		return list[i].modTime.After(list[j].modTime)
 	})
 
 	return list, nil
 }
 
-func startIndexingBackground() {
-	go func() {
-		// Wait a small moment to let server bind and satisfy first requests immediately
-		time.Sleep(1 * time.Second)
+func cleanDeletedCachedSessions(files []sessionFile) {
+	activeIDs := make(map[string]struct{}, len(files))
+	for _, sf := range files {
+		activeIDs[sf.id] = struct{}{}
+	}
 
-		for {
-			sortedFiles, err := getSessionFilesSorted()
-			if err != nil {
-				time.Sleep(10 * time.Second)
-				continue
-			}
-
-			for _, sf := range sortedFiles {
-				cacheMutex.RLock()
-				_, loaded := loadedSessions[sf.id]
-				cacheMutex.RUnlock()
-
-				if !loaded {
-					s, err := session.Load(sf.id)
-					if err == nil {
-						cacheMutex.Lock()
-						loadedSessions[sf.id] = s
-						cacheMutex.Unlock()
-
-						running := tmux.SessionExists(s.TmuxSession)
-						status := "done"
-						if running {
-							status = "running"
-						}
-
-						stats := getSessionLogStats(s, running)
-						state, detail := deriveLastActivity(s.LogFile, running)
-
-						apiSess := APISession{
-							ID:         s.ID,
-							Name:       s.Name,
-							Model:      s.Model,
-							Task:       s.Task,
-							Cwd:        s.Cwd,
-							StartedAt:  s.StartedAt,
-							Status:     status,
-							Turns:      stats.Turns,
-							TotalCost:  stats.TotalCost,
-							LastState:  state,
-							LastDetail: detail,
-						}
-
-						if status == "done" {
-							cacheMutex.Lock()
-							sessionCache[s.ID] = apiSess
-							cacheMutex.Unlock()
-						}
-					}
-					// Slight sleep to protect CPU cycles
-					time.Sleep(5 * time.Millisecond)
-				}
-			}
-
-			// Poll the directory structure every 30 seconds for external updates
-			time.Sleep(30 * time.Second)
+	cacheMutex.Lock()
+	defer cacheMutex.Unlock()
+	for id := range loadedSessions {
+		if _, exists := activeIDs[id]; !exists {
+			delete(loadedSessions, id)
+			delete(loadedMetadataModTimes, id)
+			delete(sessionCache, id)
+			delete(liveSessionCache, id)
 		}
-	}()
+	}
+}
+
+func finishSessionIndexRefresh(generation uint64, ready chan struct{}, files []sessionFile, err error) {
+	indexCacheMutex.Lock()
+	shouldClean := false
+	if generation == indexCache.generation {
+		if err == nil {
+			indexCache.files = files
+			indexCache.builtAt = dashboardNow()
+			indexCache.initialized = true
+			shouldClean = true
+		}
+		indexCache.refreshing = false
+		indexCache.ready = nil
+	}
+	indexCacheMutex.Unlock()
+	close(ready)
+
+	if shouldClean {
+		// Cleanup is done off the request path for background refreshes.
+		cleanDeletedCachedSessions(files)
+	}
+	onSessionIndexRefreshForDashboard()
+}
+
+// getCachedSessionIndex returns a fresh index synchronously on first use. On
+// later stale reads it returns the old immutable index immediately and starts
+// at most one asynchronous rebuild.
+func getCachedSessionIndex(runningSessions map[string]bool) ([]sessionFile, error) {
+	for {
+		indexCacheMutex.Lock()
+		now := dashboardNow()
+		if indexCache.initialized {
+			files := indexCache.files
+			if now.Sub(indexCache.builtAt) <= dashboardIndexTTL {
+				indexCacheMutex.Unlock()
+				return files, nil
+			}
+			if !indexCache.refreshing {
+				indexCache.refreshing = true
+				indexCache.generation++
+				generation := indexCache.generation
+				ready := make(chan struct{})
+				indexCache.ready = ready
+				indexCacheMutex.Unlock()
+				go func() {
+					files, err := buildSessionIndexForDashboard(runningSessions)
+					finishSessionIndexRefresh(generation, ready, files, err)
+				}()
+				return files, nil
+			}
+			indexCacheMutex.Unlock()
+			return files, nil
+		}
+
+		if indexCache.refreshing {
+			ready := indexCache.ready
+			indexCacheMutex.Unlock()
+			<-ready
+			continue
+		}
+
+		indexCache.refreshing = true
+		indexCache.generation++
+		generation := indexCache.generation
+		ready := make(chan struct{})
+		indexCache.ready = ready
+		indexCacheMutex.Unlock()
+
+		files, err := buildSessionIndexForDashboard(runningSessions)
+		finishSessionIndexRefresh(generation, ready, files, err)
+		return files, err
+	}
+}
+
+// runningCountForIndex deliberately counts only agentctl tmux names that have
+// a corresponding session index entry. This keeps the sidebar aggregate and
+// the returned population on the same snapshot, excluding unrelated tmux
+// sessions and stale tmux names.
+func runningCountForIndex(files []sessionFile, runningSessions map[string]bool) int {
+	indexed := make(map[string]struct{}, len(files))
+	for _, sf := range files {
+		indexed[sf.id] = struct{}{}
+	}
+	count := 0
+	for tmuxName := range runningSessions {
+		if id, ok := strings.CutPrefix(tmuxName, "agentctl-"); ok {
+			if _, exists := indexed[id]; exists {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func handleSessions(w http.ResponseWriter, r *http.Request) {
-	sortedFiles, err := getSessionFilesSorted()
+	offset, limit, err := sessionPageFromRequest(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Take one tmux snapshot per request for both row status and the aggregate;
+	// never make a per-row tmux call.
+	runningSessions := listTmuxSessionsForDashboard()
+	sortedFiles, err := getCachedSessionIndex(runningSessions)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	activeIDs := make(map[string]bool)
-	for _, sf := range sortedFiles {
-		activeIDs[sf.id] = true
+	total := len(sortedFiles)
+	// If rows were deleted while a client was on the final page, return the
+	// new final page rather than an empty, stranded page. The returned offset
+	// tells the client exactly where that fresh snapshot begins.
+	if total == 0 {
+		offset = 0
+	} else if offset >= total {
+		offset = ((total - 1) / limit) * limit
 	}
-
-	// Clean up deleted sessions
-	cacheMutex.Lock()
-	for id := range loadedSessions {
-		if !activeIDs[id] {
-			delete(loadedSessions, id)
-			delete(sessionCache, id)
-		}
+	end := offset + limit
+	if end > total {
+		end = total
 	}
-	cacheMutex.Unlock()
+	page := sortedFiles[offset:end]
 
-	// Synchronously guarantee top 100 most recent sessions are loaded instantly
-	syncLimit := 100
-	if len(sortedFiles) < syncLimit {
-		syncLimit = len(sortedFiles)
-	}
-
-	for i := 0; i < syncLimit; i++ {
-		id := sortedFiles[i].id
-		cacheMutex.RLock()
-		_, loaded := loadedSessions[id]
-		cacheMutex.RUnlock()
-
-		if !loaded {
-			s, err := session.Load(id)
-			if err == nil {
-				cacheMutex.Lock()
-				loadedSessions[id] = s
-				cacheMutex.Unlock()
-			}
-		}
-	}
-
-	// Construct list from loaded sessions maintaining modTime sorting order
-	apiSessions := make([]APISession, 0)
-	for _, sf := range sortedFiles {
+	apiSessions := make([]APISession, 0, len(page))
+	for _, sf := range page {
 		cacheMutex.RLock()
 		s, loaded := loadedSessions[sf.id]
-		cachedAPI, hasCachedAPI := sessionCache[sf.id]
+		loadedMetadataModTime := loadedMetadataModTimes[sf.id]
 		cacheMutex.RUnlock()
 
-		if !loaded {
-			continue // Skip if background thread hasn't gotten here yet
+		// A metadata rewrite can change visible fields, cached completion stats,
+		// and even the tmux/log paths. Reload it before creating this page row.
+		if !loaded || !loadedMetadataModTime.Equal(sf.metadataModTime) {
+			loadedSession, loadErr := session.Load(sf.id)
+			if loadErr != nil {
+				continue
+			}
+			s = loadedSession
+			cacheMutex.Lock()
+			// Replacing a metadata version invalidates every derived row. The
+			// cache is populated only for requested pages.
+			loadedSessions[sf.id] = s
+			loadedMetadataModTimes[sf.id] = sf.metadataModTime
+			delete(sessionCache, sf.id)
+			delete(liveSessionCache, sf.id)
+			cacheMutex.Unlock()
 		}
 
+		running := isRunning(s, runningSessions)
+		if running {
+			cacheMutex.RLock()
+			cachedLive, hasCachedLive := liveSessionCache[sf.id]
+			cacheMutex.RUnlock()
+			if hasCachedLive && cachedLive.logModTime.Equal(sf.logModTime) {
+				apiSessions = append(apiSessions, cachedLive.api)
+				continue
+			}
+
+			apiSess := makeAPISession(s, true)
+			cacheMutex.Lock()
+			liveSessionCache[s.ID] = liveAPISession{api: apiSess, logModTime: sf.logModTime}
+			delete(sessionCache, s.ID)
+			cacheMutex.Unlock()
+			apiSessions = append(apiSessions, apiSess)
+			continue
+		}
+
+		cacheMutex.RLock()
+		cachedAPI, hasCachedAPI := sessionCache[sf.id]
+		cacheMutex.RUnlock()
 		if hasCachedAPI && cachedAPI.Status == "done" {
 			apiSessions = append(apiSessions, cachedAPI)
 			continue
 		}
 
-		running := tmux.SessionExists(s.TmuxSession)
-		status := "done"
-		if running {
-			status = "running"
-		}
-
-		stats := getSessionLogStats(s, running)
-		state, detail := deriveLastActivity(s.LogFile, running)
-
-		apiSess := APISession{
-			ID:         s.ID,
-			Name:       s.Name,
-			Model:      s.Model,
-			Task:       s.Task,
-			Cwd:        s.Cwd,
-			StartedAt:  s.StartedAt,
-			Status:     status,
-			Turns:      stats.Turns,
-			TotalCost:  stats.TotalCost,
-			LastState:  state,
-			LastDetail: detail,
-		}
-
-		if status == "done" {
-			cacheMutex.Lock()
-			sessionCache[s.ID] = apiSess
-			cacheMutex.Unlock()
-		}
-
+		apiSess := makeAPISession(s, false)
+		cacheMutex.Lock()
+		sessionCache[s.ID] = apiSess
+		delete(liveSessionCache, s.ID)
+		cacheMutex.Unlock()
 		apiSessions = append(apiSessions, apiSess)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Total-Count", strconv.Itoa(total))
+	w.Header().Set("X-Running-Count", strconv.Itoa(runningCountForIndex(sortedFiles, runningSessions)))
+	w.Header().Set("X-Has-More", strconv.FormatBool(end < total))
+	w.Header().Set("X-Offset", strconv.Itoa(offset))
+	w.Header().Set("X-Limit", strconv.Itoa(limit))
 	json.NewEncoder(w).Encode(apiSessions)
+}
+
+const (
+	defaultSessionPageLimit = 100
+	maxSessionPageLimit     = defaultSessionPageLimit
+)
+
+func sessionPageFromRequest(r *http.Request) (offset, limit int, err error) {
+	offset = 0
+	limit = defaultSessionPageLimit
+	query := r.URL.Query()
+	if value, present := query["offset"]; present {
+		if len(value) != 1 || value[0] == "" {
+			return 0, 0, fmt.Errorf("invalid offset")
+		}
+		offset, err = strconv.Atoi(value[0])
+		if err != nil || offset < 0 {
+			return 0, 0, fmt.Errorf("invalid offset")
+		}
+	}
+	if value, present := query["limit"]; present {
+		if len(value) != 1 || value[0] == "" {
+			return 0, 0, fmt.Errorf("invalid limit")
+		}
+		limit, err = strconv.Atoi(value[0])
+		if err != nil || limit < 1 {
+			return 0, 0, fmt.Errorf("invalid limit")
+		}
+	}
+	if limit > maxSessionPageLimit {
+		limit = maxSessionPageLimit
+	}
+	return offset, limit, nil
 }
 
 func handleSessionLogs(w http.ResponseWriter, r *http.Request) {

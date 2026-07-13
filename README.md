@@ -81,7 +81,7 @@ Use `agentctl attach <id>` when an agent is waiting for confirmation or needs au
 agentctl dashboard --port 8080
 ```
 
-This opens a local browser dashboard for session history, live logs, and killing running sessions.
+This starts the dashboard and opens it in your default browser. Use `--no-open` to start the server without launching a browser.
 
 ## Reclaiming disk space
 

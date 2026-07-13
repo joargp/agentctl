@@ -11,7 +11,7 @@ func main() {
 	port := flag.Int("port", 8080, "port to run the server on")
 	flag.Parse()
 
-	if err := dashboard.Run(*port); err != nil {
+	if err := dashboard.Run(*port, true); err != nil {
 		log.Fatal(err)
 	}
 }
