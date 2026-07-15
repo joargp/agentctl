@@ -232,6 +232,9 @@ func runRun(_ *cobra.Command, _ []string) error {
 
 	// Hints go to stderr so they don't pollute captured output.
 	fmt.Fprintf(os.Stderr, "model:  %s\n", runModel)
+	if runThinking != "" {
+		fmt.Fprintf(os.Stderr, "thinking: %s\n", runThinking)
+	}
 	fmt.Fprintf(os.Stderr, "log:    %s\n", logFile)
 	fmt.Fprintf(os.Stderr, "\nTo monitor:  agentctl monitor %s\n", id)
 	fmt.Fprintf(os.Stderr, "To attach:   agentctl attach %s\n", id)
