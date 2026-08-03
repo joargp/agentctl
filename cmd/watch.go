@@ -17,6 +17,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const completionSummaryMaxChars = 6 * 1024
+
 var watchCmd = &cobra.Command{
 	Use:    "watch <id>",
 	Short:  "Wait for a session to finish then send completion notifications (internal)",
@@ -338,34 +340,31 @@ func completionMessage(s *session.Session) string {
 	// replaying tool calls. Read from the tail first for performance, but fall
 	// back to the full file if the tail slice doesn't yield any assistant text.
 	data := readTail(s.LogFile, 512*1024)
-	summary := completionSummaryLines(data)
-	if len(summary) == 0 {
+	summary := completionSummary(data)
+	if summary == "" {
 		if fullData, err := os.ReadFile(s.LogFile); err == nil {
-			summary = completionSummaryLines(fullData)
+			summary = completionSummary(fullData)
 		}
 	}
-	if len(summary) > 0 {
-		msg += "\n**Summary:**\n"
-		for _, l := range summary {
-			msg += l + "\n"
-		}
-		msg += "\n"
+	if summary != "" {
+		msg += "\n**Summary:**\n" + summary + "\n"
 	}
 
-	msg += fmt.Sprintf("\nRun `agentctl dump %s` for the full output.", s.ID)
+	msg += fmt.Sprintf("\nIf the summary is missing or truncated, use `agent_result` with ID `%s` or run `agentctl dump %s` for the full output.", s.ID, s.ID)
 	return msg
 }
 
-func completionSummaryLines(data []byte) []string {
+func completionSummary(data []byte) string {
 	if len(data) == 0 {
-		return nil
+		return ""
 	}
 
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
 
 	var currentText strings.Builder
-	var summary []string
+	var currentTurn []string
+	var lastAssistantTurn string
 
 	flushText := func(fallback string) {
 		text := currentText.String()
@@ -378,12 +377,7 @@ func completionSummaryLines(data []byte) []string {
 		if text == "" {
 			return
 		}
-		for _, line := range splitLines([]byte(text)) {
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			summary = append(summary, line)
-		}
+		currentTurn = append(currentTurn, text)
 	}
 
 	for scanner.Scan() {
@@ -424,21 +418,48 @@ func completionSummaryLines(data []byte) []string {
 			content, _ := event["content"].(string)
 			flushText(content)
 		case "turn_end":
-			// Flush any accumulated deltas first.
 			flushText("")
-			// If no text was captured from deltas, extract from turn_end.message.content.
-			if len(summary) == 0 {
-				if msg, _ := event["message"].(map[string]interface{}); msg != nil {
-					summary = extractTextFromContent(msg)
-				}
+			// Prefer the authoritative final assistant message on turn_end. This
+			// avoids selecting an arbitrary tail of earlier turns or tool output.
+			turnText := ""
+			if msg, _ := event["message"].(map[string]interface{}); msg != nil {
+				turnText = extractTextFromContent(msg)
 			}
+			if turnText == "" {
+				turnText = strings.Join(currentTurn, "\n\n")
+			}
+			if strings.TrimSpace(turnText) != "" {
+				lastAssistantTurn = strings.TrimSpace(turnText)
+			}
+			// A tool-only/textless final turn must not erase the previous
+			// non-empty assistant response selected for the notification.
+			currentTurn = nil
 		}
 	}
 
-	if len(summary) > 20 {
-		summary = summary[len(summary)-20:]
+	flushText("")
+	if len(currentTurn) > 0 {
+		lastAssistantTurn = strings.TrimSpace(strings.Join(currentTurn, "\n\n"))
 	}
-	return summary
+	return boundCompletionSummary(lastAssistantTurn, completionSummaryMaxChars)
+}
+
+func boundCompletionSummary(text string, maxChars int) string {
+	text = strings.TrimSpace(text)
+	runes := []rune(text)
+	if maxChars <= 0 || len(runes) <= maxChars {
+		return text
+	}
+
+	marker := "\n\n… [completion summary truncated; beginning and end shown] …\n\n"
+	markerRunes := []rune(marker)
+	if maxChars <= len(markerRunes) {
+		return string(markerRunes[:maxChars])
+	}
+	available := maxChars - len(markerRunes)
+	headChars := (available * 2) / 3
+	tailChars := available - headChars
+	return string(runes[:headChars]) + marker + string(runes[len(runes)-tailChars:])
 }
 
 // extractLastTurnText finds the last turn_end event in the log data and
@@ -489,12 +510,12 @@ func extractLastTurnText(data []byte) string {
 
 // extractTextFromContent extracts text blocks from a message's content array.
 // Used as a fallback when text_delta events were not captured.
-func extractTextFromContent(msg map[string]interface{}) []string {
+func extractTextFromContent(msg map[string]interface{}) string {
 	content, _ := msg["content"].([]interface{})
 	if len(content) == 0 {
-		return nil
+		return ""
 	}
-	var lines []string
+	var parts []string
 	for _, c := range content {
 		block, _ := c.(map[string]interface{})
 		if block == nil {
@@ -509,15 +530,7 @@ func extractTextFromContent(msg map[string]interface{}) []string {
 		if text == "" {
 			continue
 		}
-		for _, line := range splitLines([]byte(text)) {
-			if strings.TrimSpace(line) == "" {
-				continue
-			}
-			lines = append(lines, line)
-		}
+		parts = append(parts, text)
 	}
-	if len(lines) > 20 {
-		lines = lines[len(lines)-20:]
-	}
-	return lines
+	return strings.Join(parts, "\n\n")
 }
