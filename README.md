@@ -14,7 +14,7 @@ Requires `tmux` and `pi` in `$PATH`.
 
 ```bash
 # Spawn an agent — the session ID is printed to stdout, hints to stderr
-id=$(agentctl run --model claude-opus-4-6 --task "add unit tests to the auth module" --cwd /repos/myapp 2>/dev/null)
+id=$(agentctl run --model claude-opus-5-5 --task "add unit tests to the auth module" --cwd /repos/myapp 2>/dev/null)
 
 agentctl status $id     # one-line summary: "thinking", "running bash: echo hello", ...
 agentctl dump $id -f    # follow rendered output (like tail -f)
@@ -42,19 +42,19 @@ agentctl kill $id       # kill the session, preserve its log
 
 ```bash
 # Pass the task from a file (safer for large prompts)
-id=$(agentctl run --model claude-opus-4-6 --task-file /tmp/task.txt 2>/dev/null)
+id=$(agentctl run --model claude-opus-5-5 --task-file /tmp/task.txt 2>/dev/null)
 
 # Block until done
-agentctl run --model claude-opus-4-6 --task "fix the failing tests" --wait
+agentctl run --model claude-opus-5-5 --task "fix the failing tests" --wait
 
 # Set the thinking level (off, minimal, low, medium, high, xhigh)
-id=$(agentctl run --model claude-opus-4-6 --thinking high --task "refactor the session store" 2>/dev/null)
+id=$(agentctl run --model claude-opus-5-5 --thinking high --task "refactor the session store" 2>/dev/null)
 
 # Use provider/model when a model name is ambiguous across providers
-agentctl run --model openai/gpt-5.4 --task "..."
+agentctl run --model openai/gpt-6-sol --task "..."
 
 # Name sessions for readable monitor labels (default label is the model name)
-id=$(agentctl run --model claude-opus-4-6 --name opus --task "..." 2>/dev/null)
+id=$(agentctl run --model claude-opus-5-5 --name opus --task "..." 2>/dev/null)
 ```
 
 Exactly one of `--task` or `--task-file` must be provided.

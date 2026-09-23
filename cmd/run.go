@@ -40,13 +40,13 @@ Prints the session ID to stdout immediately, then returns (or blocks with --wait
 The agent's output is streamed to a log file with large delta payloads stripped.
 
 Examples:
-  agentctl run --model claude-opus-4-6 --task "add tests for the auth module"
-  agentctl run --model gpt-5.4 --task-file /tmp/task.txt --cwd /repos/myapp
-  agentctl run --model gpt-5.4 --task "review this PR" --cwd /repos/myapp --wait
-  agentctl run --model claude-opus-4-6 --thinking high --task "refactor the session store"
+  agentctl run --model claude-opus-5-5 --task "add tests for the auth module"
+  agentctl run --model openai/gpt-6-sol --task-file /tmp/task.txt --cwd /repos/myapp
+  agentctl run --model openai/gpt-6-sol --task "review this PR" --cwd /repos/myapp --wait
+  agentctl run --model claude-opus-5-5 --thinking high --task "refactor the session store"
 
 The thinking level can also be appended to the model with a colon, e.g.
-  agentctl run --model claude-opus-4-6:high --task "refactor the session store"`,
+  agentctl run --model claude-opus-5-5:high --task "refactor the session store"`,
 	RunE: runRun,
 }
 
@@ -81,7 +81,7 @@ var (
 )
 
 func init() {
-	runCmd.Flags().StringVar(&runModel, "model", "", "model to pass to pi (required); thinking level may be appended as model:level, e.g. claude-opus-4-6:high")
+	runCmd.Flags().StringVar(&runModel, "model", "", "model to pass to pi (required); thinking level may be appended as model:level, e.g. claude-opus-5-5:high")
 	runCmd.Flags().StringVar(&runThinking, "thinking", "", "thinking level to pass to pi: "+strings.Join(thinkingLevels, ", "))
 	runCmd.Flags().StringVar(&runTask, "task", "", "task prompt (mutually exclusive with --task-file)")
 	runCmd.Flags().StringVar(&runTaskFile, "task-file", "", "path to file containing task prompt (mutually exclusive with --task)")

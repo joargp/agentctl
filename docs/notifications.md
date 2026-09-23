@@ -6,10 +6,10 @@
 
 ```bash
 # Uses $PI_SESSION_ID automatically when present, but only when no explicit notifier is selected
-id=$(agentctl run --model claude-opus-4-6 --task "..." 2>/dev/null)
+id=$(agentctl run --model claude-opus-5-5 --task "..." 2>/dev/null)
 
 # Or target a specific pi session explicitly
-id=$(agentctl run --model claude-opus-4-6 --task "..." --notify-session "$PI_SESSION_ID" 2>/dev/null)
+id=$(agentctl run --model claude-opus-5-5 --task "..." --notify-session "$PI_SESSION_ID" 2>/dev/null)
 ```
 
 ## Munin shorthand (`--notify-munin`)
@@ -17,7 +17,7 @@ id=$(agentctl run --model claude-opus-4-6 --task "..." --notify-session "$PI_SES
 When Munin provides `MUNIN_EVENTS_DIR`, `MUNIN_CHANNEL_ID`, and optionally `MUNIN_THREAD_TS`:
 
 ```bash
-id=$(agentctl run --model openai/gpt-5.4 --task "..." --notify-munin 2>/dev/null)
+id=$(agentctl run --model openai/gpt-6-sol --task "..." --notify-munin 2>/dev/null)
 ```
 
 ## Event file (`--notify-event-*`)
@@ -26,7 +26,7 @@ Writes an `immediate` event JSON file on completion. Useful outside Munin or to 
 
 ```bash
 id=$(agentctl run \
-  --model openai/gpt-5.4 \
+  --model openai/gpt-6-sol \
   --task "..." \
   --notify-event-dir /workspace/events \
   --notify-event-channel C123 \
@@ -40,7 +40,7 @@ Invokes an executable with completion JSON on stdin:
 
 ```bash
 id=$(agentctl run \
-  --model openai/gpt-5.4 \
+  --model openai/gpt-6-sol \
   --task "..." \
   --notify-command ./scripts/agentctl-notify-codex \
   2>/dev/null)
@@ -57,7 +57,7 @@ Notifier commands inherit the watcher environment and receive this payload:
   "session": {
     "id": "abc12345",
     "name": "optional-name",
-    "model": "claude-opus-4-6",
+    "model": "claude-opus-5-5",
     "task": "original task",
     "cwd": "/repo/path",
     "startedAt": "2026-06-08T12:00:00Z",
@@ -65,7 +65,7 @@ Notifier commands inherit the watcher environment and receive this payload:
     "turns": 3,
     "totalCost": 0.03
   },
-  "message": "Agent **claude-opus-4-6** (`abc12345`) finished...",
+  "message": "Agent **claude-opus-5-5** (`abc12345`) finished...",
   "dumpCommand": "agentctl dump abc12345"
 }
 ```
@@ -85,7 +85,7 @@ Then invoke it by explicit path. From inside a Codex thread, pass the current th
 ```bash
 id=$(AGENTCTL_CODEX_THREAD_ID="$CODEX_THREAD_ID" \
   agentctl run \
-  --model claude-opus-4-6 \
+  --model claude-opus-5-5 \
   --task "..." \
   --notify-command "$(command -v agentctl-notify-codex)" \
   2>/dev/null)
@@ -103,7 +103,7 @@ To target a specific Codex thread explicitly:
 ```bash
 AGENTCTL_CODEX_THREAD_ID=019ea641-f54e-7c20-ab26-0edfcd41445b \
   agentctl run \
-    --model claude-opus-4-6 \
+    --model claude-opus-5-5 \
     --task "..." \
     --notify-command "$(command -v agentctl-notify-codex)"
 ```

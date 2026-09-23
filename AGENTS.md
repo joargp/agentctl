@@ -106,7 +106,7 @@ Example subagent task:
 ```text
 Run this command and report the final result concisely:
 
-agentctl run --model google/gemini-3.5-flash \
+agentctl run --model google/gemini-3.8-flash \
   --task "Investigate X and report concise findings" \
   --cwd /path/to/repo \
   --wait
