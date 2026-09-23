@@ -9,9 +9,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -37,6 +39,15 @@ var (
 	// Kept as a variable so dashboard behavior can be tested without tmux.
 	listTmuxSessionsForDashboard = tmux.ListSessions
 
+	// Runs `agentctl kill -- <id>`; a variable so tests never exec a real kill.
+	runAgentctlKillForDashboard = func(id string) ([]byte, error) {
+		return exec.Command(getAgentctlPath(), "kill", "--", id).CombinedOutput()
+	}
+
+	// Kept as variables so log streaming can be tested without tmux or 5s waits.
+	sessionExistsForDashboard = tmux.SessionExists
+	dashboardLogPingInterval  = 5 * time.Second
+
 	// These hooks keep filesystem-index behavior deterministic in tests.
 	sessionDataDirForDashboard    = session.DataDir
 	statSessionIndexFile          = os.Stat
@@ -46,6 +57,8 @@ var (
 	// Test hook invoked after an index build has installed (or failed).
 	onSessionIndexRefreshForDashboard = func() {}
 )
+
+var validSessionID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
 // sessionIndexCache holds an immutable, sorted directory index. Metadata is
 // intentionally loaded separately, and only for pages requested by a client.
@@ -314,6 +327,38 @@ func Run(port int, autoOpen bool) error {
 	return runDashboard(port, autoOpen, openBrowser, http.Serve)
 }
 
+// isLoopbackHost reports whether a Host or Origin host (with optional port)
+// names this machine's loopback interface.
+func isLoopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+// guardLocalRequests rejects DNS-rebinding (non-loopback Host) and
+// cross-site state-changing requests (non-loopback Origin on non-GET).
+func guardLocalRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isLoopbackHost(r.Host) {
+			http.Error(w, "forbidden host", http.StatusForbidden)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if origin := r.Header.Get("Origin"); origin != "" {
+				u, err := neturl.Parse(origin)
+				if err != nil || !isLoopbackHost(u.Host) {
+					http.Error(w, "forbidden origin", http.StatusForbidden)
+					return
+				}
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func runDashboard(port int, autoOpen bool, opener func(string) error, serve func(net.Listener, http.Handler) error) error {
 	mux := http.NewServeMux()
 
@@ -347,7 +392,7 @@ func runDashboard(port int, autoOpen bool, opener func(string) error, serve func
 	mux.HandleFunc("GET /api/sessions/{id}/logs", handleSessionLogs)
 	mux.HandleFunc("POST /api/sessions/{id}/kill", handleSessionKill)
 
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return err
 	}
@@ -355,7 +400,7 @@ func runDashboard(port int, autoOpen bool, opener func(string) error, serve func
 	if tcpAddr, ok := listener.Addr().(*net.TCPAddr); ok {
 		actualPort = tcpAddr.Port
 	}
-	url := fmt.Sprintf("http://localhost:%d", actualPort)
+	url := fmt.Sprintf("http://127.0.0.1:%d", actualPort)
 	fmt.Printf("agentctl dashboard running on %s\n", url)
 	if autoOpen {
 		go func() {
@@ -364,7 +409,7 @@ func runDashboard(port int, autoOpen bool, opener func(string) error, serve func
 			}
 		}()
 	}
-	return serve(listener, mux)
+	return serve(listener, guardLocalRequests(mux))
 }
 
 type sessionFile struct {
@@ -690,6 +735,10 @@ func sessionPageFromRequest(r *http.Request) (offset, limit int, err error) {
 
 func handleSessionLogs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !validSessionID.MatchString(id) {
+		http.Error(w, "invalid session id", http.StatusBadRequest)
+		return
+	}
 	s, err := session.Load(id)
 	if err != nil {
 		http.Error(w, "Session not found", http.StatusNotFound)
@@ -707,27 +756,36 @@ func handleSessionLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// First stream existing logs
-	file, err := os.Open(s.LogFile)
-	if err == nil {
-		scanner := bufio.NewScanner(file)
-		scanner.Buffer(make([]byte, 0, 128*1024), 10*1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.TrimSpace(line) != "" {
-				fmt.Fprintf(w, "data: %s\n\n", line)
-				flusher.Flush()
+	// Stream complete lines already in the log and remember where they end, so
+	// the tailer resumes there instead of replaying the file from the start.
+	var offset int64
+	var partial string
+	if file, err := os.Open(s.LogFile); err == nil {
+		reader := bufio.NewReaderSize(file, 128*1024)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				partial = line // incomplete last line (possibly still being written)
+				break
+			}
+			offset += int64(len(line))
+			if text := strings.TrimRight(line, "\r\n"); strings.TrimSpace(text) != "" {
+				fmt.Fprintf(w, "data: %s\n\n", text)
 			}
 		}
 		file.Close()
+		flusher.Flush()
 	}
 
 	// Send caught_up event
 	fmt.Fprintf(w, "event: caught_up\ndata: {}\n\n")
 	flusher.Flush()
 
-	running := tmux.SessionExists(s.TmuxSession)
+	running := sessionExistsForDashboard(s.TmuxSession)
 	if !running {
+		if strings.TrimSpace(partial) != "" {
+			fmt.Fprintf(w, "data: %s\n\n", partial)
+		}
 		fmt.Fprintf(w, "event: end\ndata: {}\n\n")
 		flusher.Flush()
 		return
@@ -735,9 +793,10 @@ func handleSessionLogs(w http.ResponseWriter, r *http.Request) {
 
 	// Start tailing
 	t, err := tail.TailFile(s.LogFile, tail.Config{
-		Follow: true,
-		ReOpen: true,
-		Poll:   true,
+		Follow:   true,
+		ReOpen:   true,
+		Poll:     true,
+		Location: &tail.SeekInfo{Offset: offset, Whence: io.SeekStart},
 	})
 	if err != nil {
 		log.Printf("Error tailing file %s: %v", s.LogFile, err)
@@ -747,7 +806,7 @@ func handleSessionLogs(w http.ResponseWriter, r *http.Request) {
 	defer t.Stop()
 
 	doneChan := r.Context().Done()
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(dashboardLogPingInterval)
 	defer ticker.Stop()
 
 	for {
@@ -758,7 +817,7 @@ func handleSessionLogs(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
 
-			if !tmux.SessionExists(s.TmuxSession) {
+			if !sessionExistsForDashboard(s.TmuxSession) {
 				time.Sleep(500 * time.Millisecond)
 				for {
 					select {
@@ -796,11 +855,13 @@ func handleSessionLogs(w http.ResponseWriter, r *http.Request) {
 
 func handleSessionKill(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !validSessionID.MatchString(id) {
+		http.Error(w, "invalid session id", http.StatusBadRequest)
+		return
+	}
 	log.Printf("Killing session %s", id)
 
-	binPath := getAgentctlPath()
-	cmd := exec.Command(binPath, "kill", id)
-	output, err := cmd.CombinedOutput()
+	output, err := runAgentctlKillForDashboard(id)
 	if err != nil {
 		log.Printf("Failed to kill session %s: %v, output: %s", id, err, string(output))
 		http.Error(w, fmt.Sprintf("Failed to kill session: %s", string(output)), http.StatusInternalServerError)

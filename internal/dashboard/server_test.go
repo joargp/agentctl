@@ -11,6 +11,7 @@ import (
 	neturl "net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -22,6 +23,9 @@ func resetDashboardState(t *testing.T) {
 	t.Helper()
 
 	previousListTmuxSessions := listTmuxSessionsForDashboard
+	previousRunAgentctlKill := runAgentctlKillForDashboard
+	previousSessionExists := sessionExistsForDashboard
+	previousLogPingInterval := dashboardLogPingInterval
 	previousSessionDataDir := sessionDataDirForDashboard
 	previousStat := statSessionIndexFile
 	previousNow := dashboardNow
@@ -45,6 +49,9 @@ func resetDashboardState(t *testing.T) {
 
 	t.Cleanup(func() {
 		listTmuxSessionsForDashboard = previousListTmuxSessions
+		runAgentctlKillForDashboard = previousRunAgentctlKill
+		sessionExistsForDashboard = previousSessionExists
+		dashboardLogPingInterval = previousLogPingInterval
 		sessionDataDirForDashboard = previousSessionDataDir
 		statSessionIndexFile = previousStat
 		dashboardNow = previousNow
@@ -178,7 +185,7 @@ func TestRunDashboardDoesNotOpenWhenDisabled(t *testing.T) {
 }
 
 func TestRunDashboardBindFailureDoesNotOpen(t *testing.T) {
-	occupied, err := net.Listen("tcp", ":0")
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("reserve port: %v", err)
 	}
@@ -670,5 +677,259 @@ func BenchmarkMakeAPISessionCompletedWithLargeLog(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = makeAPISession(s, false)
+	}
+}
+
+func TestGuardLocalRequestsRejectsForeignHost(t *testing.T) {
+	var called bool
+	guarded := guardLocalRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	called = false
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+	req.Host = "evil.example:8080"
+	response := httptest.NewRecorder()
+	guarded.ServeHTTP(response, req)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("foreign host: got status %d, want 403", response.Code)
+	}
+	if called {
+		t.Fatal("foreign host: inner handler was called")
+	}
+
+	for _, host := range []string{"localhost:8080", "127.0.0.1:8080", "[::1]:8080"} {
+		called = false
+		req := httptest.NewRequest(http.MethodGet, "/api/sessions", nil)
+		req.Host = host
+		response := httptest.NewRecorder()
+		guarded.ServeHTTP(response, req)
+		if !called {
+			t.Fatalf("host %q: inner handler was not called (status %d)", host, response.Code)
+		}
+	}
+}
+
+func TestGuardLocalRequestsRejectsCrossSitePost(t *testing.T) {
+	newGuarded := func() (http.Handler, *bool) {
+		called := false
+		return guardLocalRequests(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			w.WriteHeader(http.StatusOK)
+		})), &called
+	}
+
+	cases := []struct {
+		name       string
+		method     string
+		origin     string
+		wantStatus int
+	}{
+		{"foreign origin POST", http.MethodPost, "https://evil.example", http.StatusForbidden},
+		{"loopback origin POST", http.MethodPost, "http://localhost:8080", http.StatusOK},
+		{"no origin POST", http.MethodPost, "", http.StatusOK},
+		{"foreign origin GET", http.MethodGet, "https://evil.example", http.StatusOK},
+	}
+	for _, c := range cases {
+		guarded, called := newGuarded()
+		req := httptest.NewRequest(c.method, "/api/sessions/abc/kill", nil)
+		req.Host = "localhost:8080"
+		if c.origin != "" {
+			req.Header.Set("Origin", c.origin)
+		}
+		response := httptest.NewRecorder()
+		guarded.ServeHTTP(response, req)
+		if response.Code != c.wantStatus {
+			t.Errorf("%s: got status %d, want %d", c.name, response.Code, c.wantStatus)
+		}
+		wantCalled := c.wantStatus == http.StatusOK
+		if *called != wantCalled {
+			t.Errorf("%s: inner called = %v, want %v", c.name, *called, wantCalled)
+		}
+	}
+}
+
+func TestHandleSessionKillRejectsFlagLikeID(t *testing.T) {
+	resetDashboardState(t)
+
+	called := false
+	runAgentctlKillForDashboard = func(id string) ([]byte, error) {
+		called = true
+		return nil, nil
+	}
+
+	for _, id := range []string{"--all", "-x", "../x", "a/b", ""} {
+		called = false
+		req := httptest.NewRequest(http.MethodPost, "/api/sessions/x/kill", nil)
+		req.SetPathValue("id", id)
+		response := httptest.NewRecorder()
+		handleSessionKill(response, req)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("id %q: got status %d, want 400", id, response.Code)
+		}
+		if called {
+			t.Errorf("id %q: runAgentctlKillForDashboard was called", id)
+		}
+	}
+}
+
+func TestHandleSessionKillPassesValidID(t *testing.T) {
+	resetDashboardState(t)
+
+	var calls int
+	var gotID string
+	runAgentctlKillForDashboard = func(id string) ([]byte, error) {
+		calls++
+		gotID = id
+		return []byte(`{"success":true}`), nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/sessions/abc12345/kill", nil)
+	req.SetPathValue("id", "abc12345")
+	response := httptest.NewRecorder()
+	handleSessionKill(response, req)
+
+	if calls != 1 {
+		t.Fatalf("runAgentctlKillForDashboard called %d times, want 1", calls)
+	}
+	if gotID != "abc12345" {
+		t.Fatalf("runAgentctlKillForDashboard called with id %q, want abc12345", gotID)
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("got status %d, want 200: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHandleSessionLogsRejectsTraversalID(t *testing.T) {
+	resetDashboardState(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/x/logs", nil)
+	req.SetPathValue("id", "../../etc/passwd")
+	response := httptest.NewRecorder()
+	handleSessionLogs(response, req)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("got status %d, want 400: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestHandleSessionLogsStreamsRunningLogOnce(t *testing.T) {
+	resetDashboardState(t)
+	t.Setenv("HOME", t.TempDir())
+
+	logDir := filepath.Join(t.TempDir(), "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logFile := filepath.Join(logDir, "running.log")
+	if err := os.WriteFile(logFile, []byte(`{"type":"text_delta","delta":"one"}`+"\n"+`{"type":"text_delta","delta":"two"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	saveDashboardSession(t, &session.Session{
+		ID:          "running",
+		Model:       "gpt-test",
+		Task:        "running task",
+		Cwd:         "/tmp/running",
+		TmuxSession: "agentctl-running",
+		LogFile:     logFile,
+		StartedAt:   time.Now(),
+		StatsCached: true,
+	}, time.Now())
+
+	var running atomic.Bool
+	running.Store(true)
+	sessionExistsForDashboard = func(string) bool { return running.Load() }
+	dashboardLogPingInterval = 50 * time.Millisecond
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/running/logs", nil)
+	req.SetPathValue("id", "running")
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		handleSessionLogs(rec, req)
+		close(done)
+	}()
+
+	time.Sleep(300 * time.Millisecond)
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"type":"text_delta","delta":"three"}` + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	time.Sleep(1500 * time.Millisecond)
+	running.Store(false)
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("handleSessionLogs did not finish in time")
+	}
+
+	body := rec.Body.String()
+	if got := strings.Count(body, `"delta":"one"`); got != 1 {
+		t.Fatalf(`expected "one" once, got %d: %s`, got, body)
+	}
+	if got := strings.Count(body, `"delta":"two"`); got != 1 {
+		t.Fatalf(`expected "two" once, got %d: %s`, got, body)
+	}
+	if got := strings.Count(body, `"delta":"three"`); got != 1 {
+		t.Fatalf(`expected "three" once, got %d: %s`, got, body)
+	}
+	if !strings.Contains(body, "event: caught_up") {
+		t.Fatalf("expected caught_up event, got: %s", body)
+	}
+	if !strings.Contains(body, "event: end") {
+		t.Fatalf("expected end event, got: %s", body)
+	}
+}
+
+func TestHandleSessionLogsCompletedLogWithoutTrailingNewline(t *testing.T) {
+	resetDashboardState(t)
+	t.Setenv("HOME", t.TempDir())
+
+	logDir := filepath.Join(t.TempDir(), "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	logFile := filepath.Join(logDir, "completed.log")
+	if err := os.WriteFile(logFile, []byte(`{"a":1}`+"\n"+`{"a":2}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	saveDashboardSession(t, &session.Session{
+		ID:          "completed",
+		Model:       "gpt-test",
+		Task:        "completed task",
+		Cwd:         "/tmp/completed",
+		TmuxSession: "agentctl-completed",
+		LogFile:     logFile,
+		StartedAt:   time.Now(),
+		StatsCached: true,
+	}, time.Now())
+
+	sessionExistsForDashboard = func(string) bool { return false }
+
+	req := httptest.NewRequest(http.MethodGet, "/api/sessions/completed/logs", nil)
+	req.SetPathValue("id", "completed")
+	rec := httptest.NewRecorder()
+
+	handleSessionLogs(rec, req)
+
+	body := rec.Body.String()
+	if got := strings.Count(body, `{"a":1}`); got != 1 {
+		t.Fatalf(`expected {"a":1} once, got %d: %s`, got, body)
+	}
+	if got := strings.Count(body, `{"a":2}`); got != 1 {
+		t.Fatalf(`expected {"a":2} once, got %d: %s`, got, body)
+	}
+	if !strings.HasSuffix(body, "event: end\ndata: {}\n\n") {
+		t.Fatalf("expected body to end with end event, got: %s", body)
 	}
 }
