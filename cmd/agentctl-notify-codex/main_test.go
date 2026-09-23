@@ -45,7 +45,7 @@ func TestRunSendsMessageToCodexAppServer(t *testing.T) {
 			case "AGENTCTL_CODEX_THREAD_ID":
 				return "thread-123"
 			case "AGENTCTL_CODEX_TIMEOUT_SECONDS":
-				return "2"
+				return "30"
 			default:
 				return ""
 			}
@@ -109,7 +109,7 @@ func TestRunReturnsCodexTurnFailure(t *testing.T) {
 			case "CODEX_THREAD_ID":
 				return "thread-123"
 			case "AGENTCTL_CODEX_TIMEOUT_SECONDS":
-				return "2"
+				return "30"
 			default:
 				return ""
 			}
